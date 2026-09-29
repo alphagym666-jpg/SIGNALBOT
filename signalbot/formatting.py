@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Instrument
 from .news import EconEvent, NewsItem
+from .news_explain import NewsExplanation
 from .regime import Regime, market_view
 from .signals import Signal
 from .stocks import StockReport
@@ -82,12 +83,32 @@ def signal_message(sig: Signal, inst: Instrument) -> str:
     return "\n".join(lines)
 
 
-def news_line(n: NewsItem, tz: ZoneInfo) -> str:
-    tags = ", ".join(dict.fromkeys(n.tags))
-    markets = "/".join(sorted(n.markets)) or "-"
-    return (f"• <a href=\"{attr(n.link)}\">{e(n.title)}</a>\n"
-            f"   <i>{e(n.source)} · {n.published.astimezone(tz):%H:%M} · {e(markets)} · "
-            f"{e(tags)}</i>")
+_DIR_ICON = {"haussier": "📈 haussier", "baissier": "📉 baissier", "neutre": "➖ neutre",
+             "incertain": "❔ incertain"}
+
+
+def news_card(n: NewsItem, x: NewsExplanation, tz: ZoneInfo) -> str:
+    """Fiche complète d'une news : titre FR, c'est quoi, impact, direction NQ / or."""
+    heat = "🔴" if x.importance >= 4 else "🟠" if x.importance == 3 else "🟡"
+    lines = [
+        f"{heat} <b>{e(x.title_fr)}</b>" + ("" if x.ai else " 🇺🇸"),
+        f"<i>{e(n.source)} · {n.published.astimezone(tz):%H:%M} · importance "
+        f"{'★' * x.importance}{'☆' * (5 - x.importance)}</i>",
+        "",
+        f"📝 <b>C'est quoi :</b> {e(x.what)}",
+        f"💥 <b>Impact :</b> {e(x.impact)}",
+        f"📊 Nasdaq : {_DIR_ICON.get(x.nasdaq, x.nasdaq)}   🥇 Or : {_DIR_ICON.get(x.gold, x.gold)}",
+    ]
+    lines.append(f"🔗 <a href=\"{attr(n.link)}\">Lire l'article</a>")
+    return "\n".join(lines)
+
+
+def news_brief_line(n: NewsItem, x: NewsExplanation) -> str:
+    """Version courte (pour le brief du matin)."""
+    nq = _DIR_ICON.get(x.nasdaq, x.nasdaq).split()[0]
+    gold = _DIR_ICON.get(x.gold, x.gold).split()[0]
+    return (f"• <a href=\"{attr(n.link)}\">{e(x.title_fr)}</a>  "
+            f"<i>(Nasdaq {nq} · Or {gold})</i>")
 
 
 def event_line(ev: EconEvent, tz: ZoneInfo) -> str:

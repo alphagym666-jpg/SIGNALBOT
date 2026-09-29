@@ -6,6 +6,7 @@ Sans clé, le bot fonctionne quand même : il utilise une explication basée sur
 
 from __future__ import annotations
 
+import json
 import logging
 
 import anthropic
@@ -46,13 +47,20 @@ def _get_client() -> anthropic.AsyncAnthropic:
     return _client
 
 
-async def ask(prompt: str, web_search: bool | None = None) -> str | None:
-    """Pose une question à Claude. Retourne None si l'IA est désactivée ou en erreur."""
+async def ask(prompt: str, web_search: bool | None = None, *, system: str = SYSTEM_PROMPT,
+              effort: str | None = None, json_schema: dict | None = None) -> str | None:
+    """Pose une question à Claude. Retourne None si l'IA est désactivée ou en erreur.
+
+    Avec `json_schema`, la réponse est garantie être du JSON conforme au schéma.
+    """
     if not enabled():
         return None
     use_search = settings.claude_web_search if web_search is None else web_search
     tools = ([{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}]
              if use_search else [])
+    output_config: dict = {"effort": effort or settings.claude_effort}
+    if json_schema:
+        output_config["format"] = {"type": "json_schema", "schema": json_schema}
     messages: list[dict] = [{"role": "user", "content": prompt}]
     client = _get_client()
 
@@ -62,11 +70,11 @@ async def ask(prompt: str, web_search: bool | None = None) -> str | None:
         for _ in range(4):
             response = await client.beta.messages.create(
                 model=settings.claude_model,
-                max_tokens=8000,
-                system=SYSTEM_PROMPT,
+                max_tokens=16000,
+                system=system,
                 messages=messages,
                 tools=tools,
-                output_config={"effort": settings.claude_effort},
+                output_config=output_config,
                 betas=["server-side-fallback-2026-07-01"],
                 fallbacks="default",
             )
@@ -95,3 +103,15 @@ async def ask(prompt: str, web_search: bool | None = None) -> str | None:
     if not text:
         text = "".join(b.text for b in blocks if b.type == "text").strip()
     return text or None
+
+
+async def ask_json(prompt: str, schema: dict, *, system: str, effort: str = "low") -> dict | None:
+    """Comme `ask`, mais retourne un objet JSON validé par le schéma (sans recherche web)."""
+    text = await ask(prompt, web_search=False, system=system, effort=effort, json_schema=schema)
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        log.warning("Claude : JSON invalide reçu")
+        return None

@@ -7,7 +7,7 @@ Bot Telegram qui t'aide à **comprendre le marché** avant de trader :
 | 🧭 **Type de marché** | Pour le Nasdaq 100 (NQ) et l'or (XAUUSD) : tendance haussière/baissière, **range**, **indécis** ou **volatil**, sur 3 unités de temps (D1, H4, H1), avec une phrase simple sur quoi faire. |
 | 🎯 **Signaux d'achat/vente** | Seulement quand plusieurs éléments concordent (tendance H4/D1, repli, RSI, volume…). Chaque signal a un score /100, une entrée, un stop et 2 objectifs. Pénalisé si une annonce importante arrive bientôt. |
 | 🚨 **Alerte gros mouvement** | Dès que le prix bouge fort (ex. −0.6 % en 15 min sur NQ), alerte immédiate **avec l'explication** : news récentes, annonce économique qui vient de sortir, dollar, taux, VIX… |
-| 📰 **News importantes** | Les news qui font bouger le marché (Fed, inflation, emploi, tarifs, géopolitique…) sont poussées automatiquement. |
+| 📰 **News expliquées** | Les news qui font bouger le marché (Fed, inflation, emploi, tarifs, géopolitique…) sont envoyées **traduites et expliquées en français** : c'est quoi, l'impact possible et pourquoi, et la direction probable pour le Nasdaq 📈/📉 et l'or. |
 | ⏰ **Calendrier économique** | Rappel 30 min avant les annonces US à fort impact (CPI, NFP, FOMC…). |
 | 📈 **Section actions (CELI)** | Moyen/long terme : « ce titre a ses résultats bientôt et bat souvent les attentes » ou « bonne compagnie qui a beaucoup baissé, zone d'accumulation possible ». |
 | ☀️ **Brief du matin** | Chaque jour de semaine : type de marché, annonces du jour, news clés et un plan de match. |
@@ -15,6 +15,20 @@ Bot Telegram qui t'aide à **comprendre le marché** avant de trader :
 > ⚠️ C'est un outil d'aide à la décision, **pas un conseil financier**. Aucun système ne gagne à tous les coups : gère ton risque.
 
 ---
+
+## Menu
+
+Après `/start`, un **menu à boutons avec icônes** reste affiché en bas de Telegram :
+
+```
+[ 📊 Marché            ] [ 🎯 Signaux              ]
+[ 📰 News              ] [ 🗓️ Calendrier           ]
+[ ❓ Pourquoi ça bouge ] [ ☀️ Brief du jour         ]
+[ 📈 Opportunités actions ] [ 🔎 Analyser une action ]
+[ 👀 Watchlist         ] [ ℹ️ Aide                  ]
+```
+
+« Pourquoi ça bouge » propose ensuite Nasdaq / Or / Les deux, et la Watchlist a des boutons ➕ Ajouter / ➖ Retirer / 📈 Scanner. `/menu` réaffiche le menu si tu l'as caché.
 
 ## Commandes
 
@@ -39,7 +53,7 @@ Bot Telegram qui t'aide à **comprendre le marché** avant de trader :
 2. Copie le **token** qu'il te donne (genre `123456:ABC...`).
 
 ### 2. (Optionnel mais recommandé) Clé Claude pour les explications
-Sans clé, le bot explique les mouvements avec des règles simples (news + dollar + taux).
+Sans clé, le bot explique les mouvements et les news avec des règles simples (thème de la news, dollar, taux), et les titres restent en anglais.
 Avec une clé [Anthropic](https://console.anthropic.com/), Claude **cherche les dernières nouvelles sur le web** et t'explique en français clair ce qui se passe.
 
 ### 3. Lancer le bot

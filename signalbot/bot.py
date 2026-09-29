@@ -7,18 +7,21 @@ import functools
 import logging
 from datetime import datetime, time, timedelta, timezone
 
-from telegram import Update
+from telegram import (BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
+                      ReplyKeyboardMarkup, Update)
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
+                          MessageHandler, filters)
 
 from . import ai, data, formatting as fmt
 from .config import INSTRUMENTS, Instrument, settings
 from .moves import current_move, detect_move, explain
-from .news import events_between, fetch_calendar, fetch_news, relevant_news
+from .news import NewsItem, events_between, fetch_calendar, fetch_news, relevant_news
+from .news_explain import explain as explain_news
 from .regime import Regime, classify
 from .signals import Signal, evaluate
 from .state import State
-from .stocks import scan
+from .stocks import analyze, scan
 
 log = logging.getLogger(__name__)
 state = State(settings.state_file)
@@ -27,6 +30,7 @@ MOVE_COOLDOWN = 45 * 60
 WEEKDAYS = (1, 2, 3, 4, 5)  # python-telegram-bot : 0 = dimanche
 
 HELP = """<b>SignalBot — Nasdaq & Or</b>
+👇 Le plus simple : utilise les <b>boutons en bas</b> (ou /menu pour les réafficher).
 
 <b>Marché</b>
 /marche — type de marché (tendance, range, indécis…) pour NQ et l'or
@@ -48,6 +52,56 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 🎯 Signaux de qualité (score ≥ {min_score}/100)
 📰 News à fort impact · ⏰ Rappel {reminder} min avant les annonces
 ☀️ Brief chaque matin ({brief}) · 📈 Rapport actions ({stocks})"""
+
+
+# Menu à boutons (clavier toujours visible en bas de Telegram)
+BTN_MARCHE = "📊 Marché"
+BTN_SIGNAUX = "🎯 Signaux"
+BTN_NEWS = "📰 News"
+BTN_CALENDRIER = "🗓️ Calendrier"
+BTN_POURQUOI = "❓ Pourquoi ça bouge"
+BTN_BRIEF = "☀️ Brief du jour"
+BTN_STOCKS = "📈 Opportunités actions"
+BTN_STOCK = "🔎 Analyser une action"
+BTN_WATCHLIST = "👀 Watchlist"
+BTN_AIDE = "ℹ️ Aide"
+
+MAIN_MENU = ReplyKeyboardMarkup(
+    [[BTN_MARCHE, BTN_SIGNAUX],
+     [BTN_NEWS, BTN_CALENDRIER],
+     [BTN_POURQUOI, BTN_BRIEF],
+     [BTN_STOCKS, BTN_STOCK],
+     [BTN_WATCHLIST, BTN_AIDE]],
+    resize_keyboard=True,
+    is_persistent=True,
+    input_field_placeholder="Choisis une option 👇",
+)
+
+WHY_MENU = InlineKeyboardMarkup([[
+    InlineKeyboardButton("📊 Nasdaq", callback_data="why:NQ"),
+    InlineKeyboardButton("🥇 Or", callback_data="why:XAU"),
+    InlineKeyboardButton("🔀 Les deux", callback_data="why:ALL"),
+]])
+
+WATCHLIST_MENU = InlineKeyboardMarkup([[
+    InlineKeyboardButton("➕ Ajouter", callback_data="wl:add"),
+    InlineKeyboardButton("➖ Retirer", callback_data="wl:del"),
+    InlineKeyboardButton("📈 Scanner", callback_data="wl:scan"),
+]])
+
+BOT_COMMANDS = [
+    BotCommand("menu", "🏠 Afficher le menu"),
+    BotCommand("marche", "📊 Type de marché (tendance, range…)"),
+    BotCommand("signaux", "🎯 Signaux d'achat / vente"),
+    BotCommand("news", "📰 News importantes expliquées"),
+    BotCommand("calendrier", "🗓️ Annonces économiques"),
+    BotCommand("pourquoi", "❓ Pourquoi ça bouge (nq / or)"),
+    BotCommand("brief", "☀️ Plan de match du jour"),
+    BotCommand("stocks", "📈 Opportunités actions"),
+    BotCommand("stock", "🔎 Analyser une action (ex. /stock AAPL)"),
+    BotCommand("watchlist", "👀 Liste d'actions suivies"),
+    BotCommand("aide", "ℹ️ Aide"),
+]
 
 
 # ------------------------------------------------------------------ utilitaires
@@ -85,14 +139,16 @@ def _chunks(text: str, limit: int = 3900) -> list[str]:
     return parts
 
 
-async def send(bot, chat_id: int, text: str) -> None:
-    for part in _chunks(text):
+async def send(bot, chat_id: int, text: str, reply_markup=None) -> None:
+    parts = _chunks(text)
+    for i, part in enumerate(parts):
         await bot.send_message(chat_id, part, parse_mode=ParseMode.HTML,
-                               disable_web_page_preview=True)
+                               disable_web_page_preview=True,
+                               reply_markup=reply_markup if i == len(parts) - 1 else None)
 
 
-async def reply(update: Update, text: str) -> None:
-    await send(update.get_bot(), update.effective_chat.id, text)
+async def reply(update: Update, text: str, reply_markup=None) -> None:
+    await send(update.get_bot(), update.effective_chat.id, text, reply_markup)
 
 
 async def broadcast(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
@@ -115,6 +171,10 @@ def _upcoming_event_titles(minutes: int = 60) -> list[str]:
     return [f"{ev.title} ({ev.time.astimezone(settings.timezone):%H:%M})" for ev in events]
 
 
+def _arg(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    return context.args[0] if context.args else None
+
+
 def _find_instrument(arg: str | None) -> list[Instrument]:
     if not arg:
         return list(INSTRUMENTS.values())
@@ -134,24 +194,31 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_chat.send_message("⛔ Ce bot est privé.")
         return
     state.add_chat(chat_id)
-    await reply(update, HELP.format(min_score=settings.min_signal_score,
-                                    reminder=settings.calendar_reminder_minutes,
-                                    brief=settings.morning_brief_time,
-                                    stocks=settings.stocks_report_time)
-                + f"\n\n✅ Tu es abonné aux alertes (chat id <code>{chat_id}</code>).")
+    await reply(update, _help_text()
+                + f"\n\n✅ Tu es abonné aux alertes (chat id <code>{chat_id}</code>)."
+                + "\n👇 Utilise les boutons en bas pour naviguer.", MAIN_MENU)
+
+
+def _help_text() -> str:
+    return HELP.format(min_score=settings.min_signal_score,
+                       reminder=settings.calendar_reminder_minutes,
+                       brief=settings.morning_brief_time,
+                       stocks=settings.stocks_report_time)
 
 
 @restricted
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await reply(update, HELP.format(min_score=settings.min_signal_score,
-                                    reminder=settings.calendar_reminder_minutes,
-                                    brief=settings.morning_brief_time,
-                                    stocks=settings.stocks_report_time))
+    await reply(update, _help_text(), MAIN_MENU)
+
+
+@restricted
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await reply(update, "🏠 <b>Menu principal</b> — choisis une option 👇", MAIN_MENU)
 
 
 @restricted
 async def cmd_marche(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    insts = _find_instrument(context.args[0] if context.args else None)
+    insts = _find_instrument(_arg(context))
     blocks = []
     for inst in insts:
         _, regimes = await asyncio.to_thread(_analyze, inst)
@@ -164,7 +231,7 @@ async def cmd_marche(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_signaux(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     upcoming = await asyncio.to_thread(_upcoming_event_titles)
     msgs = []
-    for inst in _find_instrument(context.args[0] if context.args else None):
+    for inst in _find_instrument(_arg(context)):
         frames, regimes = await asyncio.to_thread(_analyze, inst)
         sigs = evaluate(inst.key, frames, regimes, upcoming)
         if sigs:
@@ -177,8 +244,15 @@ async def cmd_signaux(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 @restricted
 async def cmd_pourquoi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await reply(update, "❓ <b>Quel marché veux-tu comprendre ?</b>", WHY_MENU)
+        return
+    await _pourquoi(update, _arg(context))
+
+
+async def _pourquoi(update: Update, arg: str | None) -> None:
     await update.effective_chat.send_message("🔍 J'analyse ce qui se passe…")
-    for inst in _find_instrument(context.args[0] if context.args else None):
+    for inst in _find_instrument(arg):
         move = await asyncio.to_thread(current_move, inst)
         if not move:
             await reply(update, f"{fmt.e(inst.name)} : données indisponibles.")
@@ -186,15 +260,29 @@ async def cmd_pourquoi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await reply(update, await explain(move, alert=False))
 
 
+NEWS_SEPARATOR = "\n\n〰️〰️〰️〰️〰️\n\n"
+
+
+async def _news_message(title: str, items: list[NewsItem]) -> str:
+    """Message complet : chaque news traduite et expliquée en français."""
+    explanations = await explain_news(items)
+    cards = [fmt.news_card(n, explanations[n.id], settings.timezone) for n in items]
+    footer = ""
+    if not ai.enabled():
+        footer = ("\n\n💡 <i>Ajoute une clé ANTHROPIC_API_KEY dans .env pour avoir chaque news "
+                  "traduite et expliquée en détail.</i>")
+    return f"{title}\n\n" + NEWS_SEPARATOR.join(cards) + footer
+
+
 @restricted
 async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     items = await asyncio.to_thread(fetch_news, 12)
-    top = relevant_news(items, None, min_score=5)[:10]
+    top = relevant_news(items, None, min_score=5)[:6]
     if not top:
         await reply(update, "Aucune news importante trouvée dans les 12 dernières heures.")
         return
-    await reply(update, "📰 <b>News importantes (12 h)</b>\n\n"
-                + "\n".join(fmt.news_line(n, settings.timezone) for n in top))
+    await update.effective_chat.send_message("📰 Je lis et j'explique les news…")
+    await reply(update, await _news_message("📰 <b>News importantes (12 h)</b>", top))
 
 
 @restricted
@@ -237,40 +325,116 @@ async def cmd_stocks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await reply(update, await _stocks_report(tickers))
 
 
-@restricted
-async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not context.args:
-        await reply(update, "Utilisation : /stock AAPL (ou RY.TO pour la bourse de Toronto)")
-        return
-    from .stocks import analyze
-    ticker = context.args[0].upper()
+ASK_TICKER = ("🔎 Envoie-moi le symbole de l'action (ex. <code>AAPL</code>, <code>NVDA</code>, "
+              "<code>RY.TO</code> pour Toronto).")
+
+
+async def _stock_detail(update: Update, ticker: str) -> None:
+    ticker = ticker.upper()
+    await update.effective_chat.send_message(f"⏳ J'analyse {ticker}…")
     rep = await asyncio.to_thread(analyze, ticker, settings.dip_threshold_pct,
                                   settings.earnings_lookahead_days)
     if not rep:
-        await reply(update, f"Impossible d'analyser {fmt.e(ticker)} (ticker invalide ?).")
+        await reply(update, f"Impossible d'analyser {fmt.e(ticker)} (symbole invalide ?).")
         return
     await reply(update, fmt.stock_detail(rep) + "\n\n" + fmt.DISCLAIMER)
 
 
 @restricted
-async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_stock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        context.user_data["await"] = "stock"
+        await reply(update, ASK_TICKER)
+        return
+    await _stock_detail(update, context.args[0])
+
+
+async def _show_watchlist(update: Update) -> None:
     tickers = state.stocks(settings.stocks)
-    await reply(update, f"👀 <b>Watchlist ({len(tickers)})</b>\n" + fmt.e(", ".join(tickers)))
+    await reply(update, f"👀 <b>Watchlist ({len(tickers)} actions)</b>\n\n"
+                + fmt.e(", ".join(tickers)), WATCHLIST_MENU)
+
+
+def _add_tickers(tickers: list[str]) -> str:
+    current = state.stocks(settings.stocks)
+    added = [t.upper() for t in tickers if t.upper() not in current]
+    state.set_stocks(current + added)
+    return f"✅ Ajouté : {fmt.e(', '.join(added)) or 'rien (déjà dans la liste)'}"
+
+
+def _remove_tickers(tickers: list[str]) -> str:
+    remove = {t.upper() for t in tickers}
+    state.set_stocks([t for t in state.stocks(settings.stocks) if t not in remove])
+    return f"🗑️ Retiré : {fmt.e(', '.join(sorted(remove))) or 'rien'}"
+
+
+@restricted
+async def cmd_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _show_watchlist(update)
 
 
 @restricted
 async def cmd_ajouter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    tickers = state.stocks(settings.stocks)
-    added = [t.upper() for t in context.args if t.upper() not in tickers]
-    state.set_stocks(tickers + added)
-    await reply(update, f"✅ Ajouté : {fmt.e(', '.join(added)) or 'rien'}")
+    await reply(update, _add_tickers(context.args or []))
 
 
 @restricted
 async def cmd_retirer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    remove = {t.upper() for t in context.args}
-    state.set_stocks([t for t in state.stocks(settings.stocks) if t not in remove])
-    await reply(update, f"🗑️ Retiré : {fmt.e(', '.join(sorted(remove))) or 'rien'}")
+    await reply(update, _remove_tickers(context.args or []))
+
+
+# ------------------------------------------------------------------ boutons
+
+@restricted
+async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    kind, _, value = (query.data or "").partition(":")
+    if kind == "why":
+        await _pourquoi(update, None if value == "ALL" else value)
+    elif kind == "wl" and value == "add":
+        context.user_data["await"] = "add"
+        await reply(update, "➕ Envoie le ou les symboles à ajouter (ex. <code>AMD, RY.TO</code>).")
+    elif kind == "wl" and value == "del":
+        context.user_data["await"] = "del"
+        await reply(update, "➖ Envoie le ou les symboles à retirer.")
+    elif kind == "wl" and value == "scan":
+        await cmd_stocks.__wrapped__(update, context)
+
+
+@restricted
+async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (update.message.text or "").strip()
+    actions = {
+        BTN_MARCHE: cmd_marche, BTN_SIGNAUX: cmd_signaux, BTN_NEWS: cmd_news,
+        BTN_CALENDRIER: cmd_calendrier, BTN_BRIEF: cmd_brief, BTN_STOCKS: cmd_stocks,
+        BTN_AIDE: cmd_help,
+    }
+    if text in actions:
+        context.user_data.pop("await", None)
+        await actions[text].__wrapped__(update, context)
+        return
+    if text == BTN_POURQUOI:
+        await reply(update, "❓ <b>Quel marché veux-tu comprendre ?</b>", WHY_MENU)
+        return
+    if text == BTN_STOCK:
+        context.user_data["await"] = "stock"
+        await reply(update, ASK_TICKER)
+        return
+    if text == BTN_WATCHLIST:
+        await _show_watchlist(update)
+        return
+
+    waiting = context.user_data.pop("await", None)
+    tickers = [t for t in text.replace(",", " ").upper().split() if t]
+    if waiting == "stock" and tickers:
+        await _stock_detail(update, tickers[0])
+    elif waiting == "add":
+        await reply(update, _add_tickers(tickers))
+    elif waiting == "del":
+        await reply(update, _remove_tickers(tickers))
+    else:
+        await reply(update, "👇 Utilise les boutons du menu en bas.", MAIN_MENU)
 
 
 async def _brief_text() -> str:
@@ -290,7 +454,8 @@ async def _brief_text() -> str:
     lines.append("🗓️ <b>Annonces du jour</b>")
     lines += [fmt.event_line(ev, tz) for ev in today] or ["• Aucune annonce US majeure."]
     lines += ["", "📰 <b>À retenir</b>"]
-    lines += [fmt.news_line(n, tz) for n in top] or ["• Rien de majeur."]
+    explanations = await explain_news(top)
+    lines += [fmt.news_brief_line(n, explanations[n.id]) for n in top] or ["• Rien de majeur."]
 
     summary = await ai.ask(
         f"Nous sommes le {now:%Y-%m-%d}. Fais-moi un plan de match TRÈS court (6 puces max) "
@@ -364,8 +529,7 @@ async def job_news(context: ContextTypes.DEFAULT_TYPE) -> None:
         if not state.seen(f"news:{n.id}"):
             state.mark_seen(f"news:{n.id}")
     if to_send:
-        await broadcast(context, "📰 <b>News à fort impact</b>\n\n"
-                        + "\n".join(fmt.news_line(n, settings.timezone) for n in to_send))
+        await broadcast(context, await _news_message("🚨 <b>News à fort impact</b>", to_send))
 
 
 async def job_calendar(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -399,17 +563,25 @@ def _parse_time(value: str) -> time:
     return time(int(h), int(m), tzinfo=settings.timezone)
 
 
+async def _post_init(app: Application) -> None:
+    # Liste des commandes affichée dans le bouton « Menu » de Telegram
+    await app.bot.set_my_commands(BOT_COMMANDS)
+
+
 def build_app() -> Application:
     if not settings.telegram_token:
         raise SystemExit("TELEGRAM_BOT_TOKEN manquant (voir .env.example)")
-    app = Application.builder().token(settings.telegram_token).build()
+    app = Application.builder().token(settings.telegram_token).post_init(_post_init).build()
 
     for name, fn in [("start", cmd_start), ("aide", cmd_help), ("help", cmd_help),
+                     ("menu", cmd_menu),
                      ("marche", cmd_marche), ("signaux", cmd_signaux), ("pourquoi", cmd_pourquoi),
                      ("news", cmd_news), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
                      ("stock", cmd_stock), ("watchlist", cmd_watchlist), ("ajouter", cmd_ajouter),
                      ("retirer", cmd_retirer), ("brief", cmd_brief)]:
         app.add_handler(CommandHandler(name, fn))
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
     jq = app.job_queue
     jq.run_repeating(job_moves, interval=settings.move_check_seconds, first=20)
