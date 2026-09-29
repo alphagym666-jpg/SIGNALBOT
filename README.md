@@ -57,6 +57,12 @@ Sans clé, le bot explique les mouvements et les news avec des règles simples (
 Avec une clé [Anthropic](https://console.anthropic.com/), Claude **cherche les dernières nouvelles sur le web** et t'explique en français clair ce qui se passe.
 
 ### 3. Lancer le bot
+
+**Windows (le plus simple) :** double-clique sur **`Lancer SignalBot.bat`**. La première fois, il ouvre le fichier `.env` pour que tu colles ton token, installe tout seul ce qu'il faut (1 à 3 minutes), puis démarre le bot. Les fois suivantes, il démarre directement.
+
+Pour que le bot démarre tout seul à chaque ouverture de Windows : double-clique sur **`Demarrage automatique (on-off).bat`** (relance-le pour désactiver).
+
+**Manuellement (Windows, Mac, Linux) :**
 ```bash
 git clone <ce repo> && cd SIGNALBOT
 python -m venv .venv && source .venv/bin/activate    # Windows : .venv\Scripts\activate
