@@ -1,0 +1,7 @@
+python-telegram-bot[job-queue]>=22.0,<23
+yfinance>=1.0
+pandas>=2.2
+numpy>=1.26
+feedparser>=6.0
+anthropic>=1.9
+python-dotenv>=1.0
