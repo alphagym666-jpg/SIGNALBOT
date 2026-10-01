@@ -112,8 +112,16 @@ class Settings:
     # Qualité minimale d'un signal pour être envoyé automatiquement (0-100)
     min_signal_score: int = _env_int("MIN_SIGNAL_SCORE", 70)
     signal_cooldown_hours: float = _env_float("SIGNAL_COOLDOWN_HOURS", 4)
-    # Score minimal pour qu'une news soit poussée automatiquement
+    # Score minimal (mots-clés) pour qu'une news soit analysée
     min_news_score: int = _env_int("MIN_NEWS_SCORE", 6)
+    # Importance minimale (1 à 5) pour qu'une news soit envoyée automatiquement : 4 = fort impact seulement
+    news_min_importance: int = _env_int("NEWS_MIN_IMPORTANCE", 4)
+    # Nombre maximal de news envoyées automatiquement par heure
+    news_max_per_hour: int = _env_int("NEWS_MAX_PER_HOUR", 3)
+    # Heures du résumé des news (heure locale, jours de semaine)
+    digest_times: list[str] = field(
+        default_factory=lambda: [t.strip() for t in _env("DIGEST_TIMES", "07:30,12:00,16:30").split(",")
+                                 if t.strip()])
     # Rappel avant une annonce économique importante (minutes)
     calendar_reminder_minutes: int = _env_int("CALENDAR_REMINDER_MINUTES", 30)
 

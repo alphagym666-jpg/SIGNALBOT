@@ -7,7 +7,8 @@ Bot Telegram qui t'aide à **comprendre le marché** avant de trader :
 | 🧭 **Type de marché** | Pour le Nasdaq 100 (NQ) et l'or (XAUUSD) : tendance haussière/baissière, **range**, **indécis** ou **volatil**, sur 3 unités de temps (D1, H4, H1), avec une phrase simple sur quoi faire. |
 | 🎯 **Signaux d'achat/vente** | Seulement quand plusieurs éléments concordent (tendance H4/D1, repli, RSI, volume…). Chaque signal a un score /100, une entrée, un stop et 2 objectifs. Pénalisé si une annonce importante arrive bientôt. |
 | 🚨 **Alerte gros mouvement** | Dès que le prix bouge fort (ex. −0.6 % en 15 min sur NQ), alerte immédiate **avec l'explication** : news récentes, annonce économique qui vient de sortir, dollar, taux, VIX… |
-| 📰 **News expliquées** | Les news qui font bouger le marché (Fed, inflation, emploi, tarifs, géopolitique…) sont envoyées **traduites et expliquées en français** : c'est quoi, l'impact possible et pourquoi, et la direction probable pour le Nasdaq 📈/📉 et l'or. |
+| 🔥 **News à fort impact seulement** | Seules les news qui peuvent vraiment faire bouger le Nasdaq ou l'or sont envoyées (importance ≥ 4/5, max 3 par heure). Chaque news : c'est quoi, l'impact, la **réaction probable du marché**, l'**effet sur les taux d'intérêt** et la direction probable Nasdaq 📈/📉 et or. |
+| 🧭 **Résumé des news** | 3 fois par jour (et sur demande) : en lisant toutes les news, le marché penche-t-il vers la **hausse, la baisse ou la stabilité** pour le Nasdaq et l'or ? Vers des **baisses ou des hausses de taux** ? Avec le niveau de confiance, les thèmes du moment et quoi surveiller. |
 | ⏰ **Calendrier économique** | Rappel 30 min avant les annonces US à fort impact (CPI, NFP, FOMC…). |
 | 📈 **Section actions (CELI)** | Moyen/long terme : « ce titre a ses résultats bientôt et bat souvent les attentes » ou « bonne compagnie qui a beaucoup baissé, zone d'accumulation possible ». |
 | ☀️ **Brief du matin** | Chaque jour de semaine : type de marché, annonces du jour, news clés et un plan de match. |
@@ -22,10 +23,11 @@ Après `/start`, un **menu à boutons avec icônes** reste affiché en bas de Te
 
 ```
 [ 📊 Marché            ] [ 🎯 Signaux              ]
-[ 📰 News              ] [ 🗓️ Calendrier           ]
-[ ❓ Pourquoi ça bouge ] [ ☀️ Brief du jour         ]
-[ 📈 Opportunités actions ] [ 🔎 Analyser une action ]
-[ 👀 Watchlist         ] [ ℹ️ Aide                  ]
+[ 🧭 Résumé des news  ] [ 🔥 News fort impact     ]
+[ ❓ Pourquoi ça bouge ] [ 🗓️ Calendrier           ]
+[ ☀️ Brief du jour     ] [ 📈 Opportunités actions ]
+[ 🔎 Analyser une action ] [ 👀 Watchlist          ]
+[ ℹ️ Aide              ]
 ```
 
 « Pourquoi ça bouge » propose ensuite Nasdaq / Or / Les deux, et la Watchlist a des boutons ➕ Ajouter / ➖ Retirer / 📈 Scanner. `/menu` réaffiche le menu si tu l'as caché.
@@ -38,7 +40,8 @@ Après `/start`, un **menu à boutons avec icônes** reste affiché en bas de Te
 | `/signaux` | Meilleur setup du moment pour chaque marché |
 | `/pourquoi nq` / `/pourquoi or` | Pourquoi ça bouge en ce moment |
 | `/brief` | Plan de match du jour |
-| `/news` | News importantes des 12 dernières heures |
+| `/resume` | Résumé : le marché penche vers où, et les taux ? |
+| `/news` | Seulement les news à fort impact, expliquées |
 | `/calendrier` | Annonces US à fort impact cette semaine |
 | `/stocks` | Opportunités actions (earnings + grosses baisses) |
 | `/stock AAPL` | Analyse complète d'une action (`RY.TO` pour Toronto) |

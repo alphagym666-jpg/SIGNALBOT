@@ -17,7 +17,7 @@ from . import ai, data, formatting as fmt
 from .config import INSTRUMENTS, Instrument, settings
 from .moves import current_move, detect_move, explain
 from .news import NewsItem, events_between, fetch_calendar, fetch_news, relevant_news
-from .news_explain import explain as explain_news
+from .news_explain import NewsExplanation, digest as news_digest, explain as explain_news
 from .regime import Regime, classify
 from .signals import Signal, evaluate
 from .state import State
@@ -39,7 +39,8 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 /brief — plan de match du jour
 
 <b>News</b>
-/news — news importantes des dernières heures
+/resume — résumé de toutes les news : hausse, baisse ou stabilité ? et les taux ?
+/news — seulement les news à fort impact, expliquées
 /calendrier — annonces économiques US à fort impact cette semaine
 
 <b>Actions (moyen/long terme, CELI)</b>
@@ -50,14 +51,16 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 <b>Automatique</b>
 🚨 Alerte + explication dès qu'un gros mouvement arrive
 🎯 Signaux de qualité (score ≥ {min_score}/100)
-📰 News à fort impact · ⏰ Rappel {reminder} min avant les annonces
+🔥 News à fort impact seulement · 🧭 Résumé des news ({digest})
+⏰ Rappel {reminder} min avant les annonces
 ☀️ Brief chaque matin ({brief}) · 📈 Rapport actions ({stocks})"""
 
 
 # Menu à boutons (clavier toujours visible en bas de Telegram)
 BTN_MARCHE = "📊 Marché"
 BTN_SIGNAUX = "🎯 Signaux"
-BTN_NEWS = "📰 News"
+BTN_NEWS = "🔥 News fort impact"
+BTN_RESUME = "🧭 Résumé des news"
 BTN_CALENDRIER = "🗓️ Calendrier"
 BTN_POURQUOI = "❓ Pourquoi ça bouge"
 BTN_BRIEF = "☀️ Brief du jour"
@@ -68,10 +71,11 @@ BTN_AIDE = "ℹ️ Aide"
 
 MAIN_MENU = ReplyKeyboardMarkup(
     [[BTN_MARCHE, BTN_SIGNAUX],
-     [BTN_NEWS, BTN_CALENDRIER],
-     [BTN_POURQUOI, BTN_BRIEF],
-     [BTN_STOCKS, BTN_STOCK],
-     [BTN_WATCHLIST, BTN_AIDE]],
+     [BTN_RESUME, BTN_NEWS],
+     [BTN_POURQUOI, BTN_CALENDRIER],
+     [BTN_BRIEF, BTN_STOCKS],
+     [BTN_STOCK, BTN_WATCHLIST],
+     [BTN_AIDE]],
     resize_keyboard=True,
     is_persistent=True,
     input_field_placeholder="Choisis une option 👇",
@@ -93,7 +97,8 @@ BOT_COMMANDS = [
     BotCommand("menu", "🏠 Afficher le menu"),
     BotCommand("marche", "📊 Type de marché (tendance, range…)"),
     BotCommand("signaux", "🎯 Signaux d'achat / vente"),
-    BotCommand("news", "📰 News importantes expliquées"),
+    BotCommand("resume", "🧭 Résumé : le marché penche vers où ?"),
+    BotCommand("news", "🔥 News à fort impact expliquées"),
     BotCommand("calendrier", "🗓️ Annonces économiques"),
     BotCommand("pourquoi", "❓ Pourquoi ça bouge (nq / or)"),
     BotCommand("brief", "☀️ Plan de match du jour"),
@@ -203,7 +208,8 @@ def _help_text() -> str:
     return HELP.format(min_score=settings.min_signal_score,
                        reminder=settings.calendar_reminder_minutes,
                        brief=settings.morning_brief_time,
-                       stocks=settings.stocks_report_time)
+                       stocks=settings.stocks_report_time,
+                       digest=", ".join(settings.digest_times))
 
 
 @restricted
@@ -263,26 +269,57 @@ async def _pourquoi(update: Update, arg: str | None) -> None:
 NEWS_SEPARATOR = "\n\n〰️〰️〰️〰️〰️\n\n"
 
 
-async def _news_message(title: str, items: list[NewsItem]) -> str:
-    """Message complet : chaque news traduite et expliquée en français."""
-    explanations = await explain_news(items)
+NO_AI_FOOTER = ("\n\n💡 <i>Ajoute une clé ANTHROPIC_API_KEY dans .env pour avoir chaque news "
+                "traduite, expliquée et vraiment triée par importance.</i>")
+DIGEST_HOURS = 12
+
+
+def _cards_message(title: str, items: list[NewsItem], explanations: dict[str, NewsExplanation]) -> str:
     cards = [fmt.news_card(n, explanations[n.id], settings.timezone) for n in items]
-    footer = ""
-    if not ai.enabled():
-        footer = ("\n\n💡 <i>Ajoute une clé ANTHROPIC_API_KEY dans .env pour avoir chaque news "
-                  "traduite et expliquée en détail.</i>")
-    return f"{title}\n\n" + NEWS_SEPARATOR.join(cards) + footer
+    return f"{title}\n\n" + NEWS_SEPARATOR.join(cards) + ("" if ai.enabled() else NO_AI_FOOTER)
+
+
+async def _high_impact(items: list[NewsItem], limit: int = 8
+                       ) -> tuple[list[NewsItem], dict[str, NewsExplanation]]:
+    """Analyse les news candidates et garde seulement celles à fort impact (importance ≥ réglage)."""
+    candidates = relevant_news(items, None, min_score=settings.min_news_score)[:limit]
+    explanations = await explain_news(candidates)
+    keep = [n for n in candidates if explanations[n.id].importance >= settings.news_min_importance]
+    keep.sort(key=lambda n: explanations[n.id].importance, reverse=True)
+    return keep, explanations
+
+
+async def _digest_text(hours: int = DIGEST_HOURS) -> str | None:
+    items = await asyncio.to_thread(fetch_news, hours)
+    pool = relevant_news(items, None, min_score=settings.min_news_score)[:30]
+    d = await news_digest(pool)
+    if d is None:
+        return None
+    by_id = {n.id: n for n in pool}
+    key_items = [by_id[k] for k in d.key_ids if k in by_id]
+    explanations = await explain_news(key_items) if ai.enabled() else {}
+    text = fmt.digest_message(d, by_id, explanations, hours)
+    return text + ("" if d.ai else NO_AI_FOOTER) + "\n\n" + fmt.DISCLAIMER
+
+
+@restricted
+async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_chat.send_message("🧭 Je lis toutes les news et je fais le point…")
+    text = await _digest_text()
+    await reply(update, text or f"Aucune news importante dans les {DIGEST_HOURS} dernières heures.")
 
 
 @restricted
 async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    items = await asyncio.to_thread(fetch_news, 12)
-    top = relevant_news(items, None, min_score=5)[:6]
-    if not top:
-        await reply(update, "Aucune news importante trouvée dans les 12 dernières heures.")
+    await update.effective_chat.send_message("🔥 Je cherche les news à fort impact…")
+    items = await asyncio.to_thread(fetch_news, DIGEST_HOURS)
+    keep, explanations = await _high_impact(items, limit=10)
+    if not keep:
+        await reply(update, f"✅ Aucune news à fort impact dans les {DIGEST_HOURS} dernières heures. "
+                            "Pour la vue d'ensemble, utilise 🧭 Résumé des news.")
         return
-    await update.effective_chat.send_message("📰 Je lis et j'explique les news…")
-    await reply(update, await _news_message("📰 <b>News importantes (12 h)</b>", top))
+    await reply(update, _cards_message(f"🔥 <b>News à fort impact ({DIGEST_HOURS} h)</b>",
+                                       keep[:5], explanations))
 
 
 @restricted
@@ -406,7 +443,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.message.text or "").strip()
     actions = {
-        BTN_MARCHE: cmd_marche, BTN_SIGNAUX: cmd_signaux, BTN_NEWS: cmd_news,
+        BTN_MARCHE: cmd_marche, BTN_SIGNAUX: cmd_signaux, BTN_NEWS: cmd_news, BTN_RESUME: cmd_resume,
         BTN_CALENDRIER: cmd_calendrier, BTN_BRIEF: cmd_brief, BTN_STOCKS: cmd_stocks,
         BTN_AIDE: cmd_help,
     }
@@ -448,21 +485,26 @@ async def _brief_text() -> str:
     local_today = datetime.now(tz).date()
     today = [ev for ev in events if ev.time.astimezone(tz).date() == local_today]
     items = await asyncio.to_thread(fetch_news, 14)
-    top = relevant_news(items, None, min_score=6)[:6]
+    top = relevant_news(items, None, min_score=settings.min_news_score)[:30]
 
     lines = [f"☀️ <b>Brief du {fmt.fr_date(datetime.now(tz), '%A %d %B')}</b>", "", *blocks, ""]
     lines.append("🗓️ <b>Annonces du jour</b>")
     lines += [fmt.event_line(ev, tz) for ev in today] or ["• Aucune annonce US majeure."]
-    lines += ["", "📰 <b>À retenir</b>"]
-    explanations = await explain_news(top)
-    lines += [fmt.news_brief_line(n, explanations[n.id]) for n in top] or ["• Rien de majeur."]
+    d = await news_digest(top)
+    if d:
+        lines += ["", "🧭 <b>Les news de la nuit</b>",
+                  f"Nasdaq {fmt.BIAS_SHORT.get(d.nasdaq, d.nasdaq)} · Or {fmt.BIAS_SHORT.get(d.gold, d.gold)}"
+                  f" · Taux {fmt.OUTLOOK_SHORT.get(d.rates, d.rates)} (confiance {fmt.e(d.confidence)})",
+                  fmt.e(d.summary)]
+    else:
+        lines += ["", "🧭 <b>Les news de la nuit</b>", "• Rien de majeur."]
 
     summary = await ai.ask(
         f"Nous sommes le {now:%Y-%m-%d}. Fais-moi un plan de match TRÈS court (6 puces max) "
         "pour le Nasdaq 100 et l'or aujourd'hui : le sentiment général, les annonces/événements "
         "à surveiller et les heures clés (heure de l'Est), et le risque principal.\n\n"
         f"Annonces du jour : {', '.join(f'{e.title} {e.time.astimezone(tz):%H:%M}' for e in today) or 'aucune'}\n"
-        f"Titres récents : {' | '.join(n.title for n in top) or 'aucun'}"
+        f"Titres récents : {' | '.join(n.title for n in top[:8]) or 'aucun'}"
     )
     if summary:
         lines += ["", "🧠 <b>Plan de match</b>", fmt.e(summary)]
@@ -519,17 +561,40 @@ async def job_signals(context: ContextTypes.DEFAULT_TYPE) -> None:
             break
 
 
+def _news_budget() -> int:
+    """Combien de news on peut encore envoyer cette heure-ci (anti-spam)."""
+    now = datetime.now(timezone.utc).timestamp()
+    sent = [t for t in state.data.get("news_sent", []) if now - t < 3600]
+    state.data["news_sent"] = sent
+    return max(0, settings.news_max_per_hour - len(sent))
+
+
 async def job_news(context: ContextTypes.DEFAULT_TYPE) -> None:
     items = await asyncio.to_thread(fetch_news, 3)
     first_run = not any(k.startswith("news:") for k in state.data["seen"])
-    fresh = [n for n in relevant_news(items, None, min_score=settings.min_news_score)
-             if not state.seen(f"news:{n.id}")]
-    to_send = fresh[:3] if first_run else fresh[:5]
+    fresh = [n for n in items if not state.seen(f"news:{n.id}")]
     for n in items:  # tout marquer comme vu pour ne pas renvoyer plus tard
         if not state.seen(f"news:{n.id}"):
             state.mark_seen(f"news:{n.id}")
-    if to_send:
-        await broadcast(context, await _news_message("🚨 <b>News à fort impact</b>", to_send))
+    if first_run or not fresh:
+        return  # au premier lancement on ne renvoie pas les news déjà publiées
+    budget = _news_budget()
+    if budget == 0:
+        return
+    keep, explanations = await _high_impact(fresh)
+    to_send = keep[:budget]
+    if not to_send:
+        return
+    now = datetime.now(timezone.utc).timestamp()
+    state.data["news_sent"] = state.data.get("news_sent", []) + [now] * len(to_send)
+    state.save()
+    await broadcast(context, _cards_message("🚨 <b>News à fort impact</b>", to_send, explanations))
+
+
+async def job_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = await _digest_text()
+    if text:
+        await broadcast(context, text)
 
 
 async def job_calendar(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -576,7 +641,7 @@ def build_app() -> Application:
     for name, fn in [("start", cmd_start), ("aide", cmd_help), ("help", cmd_help),
                      ("menu", cmd_menu),
                      ("marche", cmd_marche), ("signaux", cmd_signaux), ("pourquoi", cmd_pourquoi),
-                     ("news", cmd_news), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
+                     ("news", cmd_news), ("resume", cmd_resume), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
                      ("stock", cmd_stock), ("watchlist", cmd_watchlist), ("ajouter", cmd_ajouter),
                      ("retirer", cmd_retirer), ("brief", cmd_brief)]:
         app.add_handler(CommandHandler(name, fn))
@@ -589,6 +654,8 @@ def build_app() -> Application:
     jq.run_repeating(job_news, interval=settings.news_check_seconds, first=60)
     jq.run_repeating(job_calendar, interval=settings.calendar_check_seconds, first=30)
     jq.run_daily(job_brief, time=_parse_time(settings.morning_brief_time), days=WEEKDAYS)
+    for t in settings.digest_times:
+        jq.run_daily(job_digest, time=_parse_time(t), days=WEEKDAYS)
     jq.run_daily(job_stocks, time=_parse_time(settings.stocks_report_time), days=WEEKDAYS)
 
     if ai.enabled():

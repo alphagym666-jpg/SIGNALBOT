@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Instrument
 from .news import EconEvent, NewsItem
-from .news_explain import NewsExplanation
+from .news_explain import Digest, NewsExplanation
 from .regime import Regime, market_view
 from .signals import Signal
 from .stocks import StockReport
@@ -87,6 +87,46 @@ _DIR_ICON = {"haussier": "📈 haussier", "baissier": "📉 baissier", "neutre":
              "incertain": "❔ incertain"}
 
 
+_RATES_ICON = {"baisse": "📉 rapproche des baisses de taux", "hausse": "📈 taux plus hauts plus longtemps",
+               "aucun effet": "➖ pas d'effet", "incertain": "❔ effet incertain"}
+_BIAS_ICON = {"hausse": "📈 penche à la HAUSSE", "baisse": "📉 penche à la BAISSE",
+              "stabilité": "➖ plutôt STABLE", "incertain": "❔ incertain"}
+_OUTLOOK_ICON = {"baisses de taux": "📉 vers des BAISSES de taux", "hausses de taux": "📈 vers des HAUSSES de taux",
+                 "statu quo": "➖ statu quo (pas de changement)", "incertain": "❔ incertain"}
+
+
+BIAS_SHORT = {"hausse": "📈 hausse", "baisse": "📉 baisse", "stabilité": "➖ stable", "incertain": "❔"}
+OUTLOOK_SHORT = {"baisses de taux": "📉 baisses", "hausses de taux": "📈 hausses", "statu quo": "➖ statu quo",
+                 "incertain": "❔"}
+
+
+def digest_message(d: Digest, items: dict[str, NewsItem], explanations: dict[str, NewsExplanation],
+                   hours: int) -> str:
+    """Résumé global : où penche le marché selon toutes les news, et vers où vont les taux."""
+    lines = [
+        f"🧭 <b>Résumé des news</b> · {d.count} news importantes ({hours} dernières h)",
+        "",
+        f"📊 <b>Nasdaq :</b> {_BIAS_ICON.get(d.nasdaq, d.nasdaq)}",
+        f"🥇 <b>Or :</b> {_BIAS_ICON.get(d.gold, d.gold)}",
+        f"🏦 <b>Taux d'intérêt :</b> {_OUTLOOK_ICON.get(d.rates, d.rates)}",
+        f"   <i>{e(d.rates_why)}</i>" if d.rates_why else None,
+        f"🎚️ Confiance : <b>{e(d.confidence)}</b>",
+        "",
+        f"📝 <b>En bref :</b> {e(d.summary)}",
+    ]
+    if d.themes:
+        lines += ["", "🔑 <b>Thèmes du moment</b>", *[f"• {e(t)}" for t in d.themes]]
+    if d.watch:
+        lines += ["", "👀 <b>À surveiller</b>", *[f"• {e(w)}" for w in d.watch]]
+    keys = [k for k in d.key_ids if k in items]
+    if keys:
+        lines += ["", "🔥 <b>News clés</b>"]
+        for k in keys:
+            title = explanations[k].title_fr if k in explanations else items[k].title
+            lines.append(f"• <a href=\"{attr(items[k].link)}\">{e(title)}</a>")
+    return "\n".join(line for line in lines if line is not None)
+
+
 def news_card(n: NewsItem, x: NewsExplanation, tz: ZoneInfo) -> str:
     """Fiche complète d'une news : titre FR, c'est quoi, impact, direction NQ / or."""
     heat = "🔴" if x.importance >= 4 else "🟠" if x.importance == 3 else "🟡"
@@ -97,18 +137,14 @@ def news_card(n: NewsItem, x: NewsExplanation, tz: ZoneInfo) -> str:
         "",
         f"📝 <b>C'est quoi :</b> {e(x.what)}",
         f"💥 <b>Impact :</b> {e(x.impact)}",
-        f"📊 Nasdaq : {_DIR_ICON.get(x.nasdaq, x.nasdaq)}   🥇 Or : {_DIR_ICON.get(x.gold, x.gold)}",
     ]
+    if x.reaction:
+        lines.append(f"🎯 <b>Réaction probable :</b> {e(x.reaction)}")
+    rates = _RATES_ICON.get(x.rates, x.rates)
+    lines.append(f"🏦 <b>Taux d'intérêt :</b> {rates}" + (f" — {e(x.rates_why)}" if x.rates_why else ""))
+    lines.append(f"📊 Nasdaq : {_DIR_ICON.get(x.nasdaq, x.nasdaq)}   🥇 Or : {_DIR_ICON.get(x.gold, x.gold)}")
     lines.append(f"🔗 <a href=\"{attr(n.link)}\">Lire l'article</a>")
     return "\n".join(lines)
-
-
-def news_brief_line(n: NewsItem, x: NewsExplanation) -> str:
-    """Version courte (pour le brief du matin)."""
-    nq = _DIR_ICON.get(x.nasdaq, x.nasdaq).split()[0]
-    gold = _DIR_ICON.get(x.gold, x.gold).split()[0]
-    return (f"• <a href=\"{attr(n.link)}\">{e(x.title_fr)}</a>  "
-            f"<i>(Nasdaq {nq} · Or {gold})</i>")
 
 
 def event_line(ev: EconEvent, tz: ZoneInfo) -> str:
