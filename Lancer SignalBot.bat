@@ -43,20 +43,36 @@ notepad ".env"
 :token_ok
 
 rem ---- 3. Environnement Python du bot (cree une seule fois)
-if exist ".venv\Scripts\python.exe" goto venv_ok
+set "RUNPY=.venv\Scripts\python.exe"
+set "MARKER=.venv\requirements.installed"
+if exist "%RUNPY%" goto venv_check
 echo  [..] Premiere installation, ca prend 1 a 3 minutes...
 %PY% -m venv .venv
-if errorlevel 1 goto install_error
-:venv_ok
+if errorlevel 1 goto use_system
+:venv_check
+rem certains Python creent l'environnement sans pip : on le repare, sinon on utilise le Python normal
+"%RUNPY%" -m pip --version >nul 2>nul
+if not errorlevel 1 goto deps
+echo  [..] Reparation de pip...
+"%RUNPY%" -m ensurepip --upgrade >nul 2>nul
+"%RUNPY%" -m pip --version >nul 2>nul
+if not errorlevel 1 goto deps
+:use_system
+echo  [..] Utilisation du Python installe sur l'ordinateur.
+if exist ".venv" rmdir /s /q ".venv"
+set "RUNPY=%PY%"
+set "MARKER=.requirements.installed"
+%PY% -m pip --version >nul 2>nul
+if errorlevel 1 %PY% -m ensurepip --upgrade >nul 2>nul
 
 rem ---- 4. Installer / mettre a jour les modules si requirements.txt a change
-fc /b "requirements.txt" ".venv\requirements.installed" >nul 2>nul
+:deps
+fc /b "requirements.txt" "%MARKER%" >nul 2>nul
 if not errorlevel 1 goto deps_ok
 echo  [..] Installation des modules necessaires...
-".venv\Scripts\python.exe" -m pip install --upgrade pip --quiet --disable-pip-version-check
-".venv\Scripts\python.exe" -m pip install -r requirements.txt --quiet --disable-pip-version-check
+"%RUNPY%" -m pip install -r requirements.txt --quiet --disable-pip-version-check
 if errorlevel 1 goto install_error
-copy /y "requirements.txt" ".venv\requirements.installed" >nul
+copy /y "requirements.txt" "%MARKER%" >nul
 :deps_ok
 
 rem ---- 5. Lancer le bot
@@ -64,7 +80,7 @@ echo  [OK] Le bot demarre. Laisse cette fenetre ouverte.
 echo       Pour l'arreter : ferme la fenetre ou fais Ctrl+C.
 echo       Dans Telegram, envoie /start a ton bot.
 echo.
-".venv\Scripts\python.exe" -m signalbot
+"%RUNPY%" -m signalbot
 echo.
 echo  [!] Le bot s'est arrete. Si tu vois une erreur plus haut,
 echo      prends une capture d'ecran de cette fenetre.
@@ -74,5 +90,6 @@ exit /b 0
 :install_error
 echo.
 echo  [X] L'installation a echoue. Prends une capture d'ecran de cette fenetre.
+echo      Astuce : supprime le dossier .venv dans le dossier du bot et relance ce fichier.
 pause
 exit /b 1
