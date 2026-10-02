@@ -1,0 +1,218 @@
+//@version=5
+// SignalBot Niveaux — indicateur TradingView relié au bot Telegram SignalBot
+//
+// Ce qu'il affiche :
+//   1. Les niveaux du bot (commande /tv dans Telegram, à coller dans les paramètres) :
+//      murs gamma des options, bascule gamma, niveaux SpotGamma, profil de volume d'hier
+//      (POC, zone de valeur), zones d'achat / de vente / invalidation de l'analyse IA,
+//      + le biais de l'IA et le régime gamma dans le tableau.
+//      Les niveaux sont en prix des contrats à terme (NQ1!, GC1!) : ils sont convertis
+//      automatiquement au prix de ce graphique (NAS100, US100, XAUUSD...).
+//   2. Des niveaux calculés en direct : VWAP, haut / bas / clôture d'hier,
+//      haut / bas de la nuit (18 h - 9 h 30 New York), EMA 20 / 50 / 200.
+//   3. Le type de marché (tendance, range, indécis) sur ce graphique, en H4 et en jour,
+//      calculé comme dans le bot.
+//   4. Les signaux « repli dans la tendance » du bot (triangles) + alertes.
+//   5. Une alerte quand le prix croise un niveau du bot (créer une alerte
+//      « Any alert() function call » / « N'importe quel appel de la fonction alert() »).
+
+indicator("SignalBot Niveaux", shorttitle="SignalBot", overlay=true, max_lines_count=200, max_labels_count=200)
+
+// ------------------------------------------------------------------ paramètres
+grpBot = "Niveaux du bot Telegram (commande /tv)"
+levelsTxt = input.text_area("", "Ligne copiée depuis /tv", group=grpBot)
+marketIn = input.string("Auto", "Marché", options=["Auto", "NQ", "XAU"], group=grpBot)
+convert = input.bool(true, "Convertir les niveaux au prix de ce graphique", group=grpBot)
+refNQ = input.symbol("CME_MINI:NQ1!", "Référence Nasdaq (prix des niveaux)", group=grpBot)
+refXAU = input.symbol("COMEX:GC1!", "Référence or (prix des niveaux)", group=grpBot)
+extendBars = input.int(25, "Longueur des lignes vers la droite (bougies)", minval=1, group=grpBot)
+
+grpLive = "Niveaux calculés en direct"
+showVwap = input.bool(true, "VWAP de la séance", group=grpLive)
+showPrev = input.bool(true, "Haut / bas / clôture d'hier", group=grpLive)
+showON = input.bool(true, "Haut / bas de la nuit (18 h - 9 h 30 New York)", group=grpLive)
+showEma = input.bool(true, "EMA 20 / 50 / 200", group=grpLive)
+
+grpSig = "Signaux"
+showSig = input.bool(true, "Repli dans la tendance (même logique que le bot)", group=grpSig)
+htf = input.timeframe("240", "Unité de temps de la tendance de fond", group=grpSig)
+
+grpTab = "Tableau"
+showTable = input.bool(true, "Afficher le tableau", group=grpTab)
+
+// ------------------------------------------------------------------ marché et conversion
+tk = str.upper(syminfo.ticker)
+isGold = str.contains(tk, "XAU") or str.contains(tk, "GOLD") or str.startswith(tk, "GC")
+mkt = marketIn == "Auto" ? (isGold ? "XAU" : "NQ") : marketIn
+refSym = mkt == "XAU" ? refXAU : refNQ
+refClose = request.security(refSym, timeframe.period, close, ignore_invalid_symbol=true)
+ratio = convert and not na(refClose) and refClose > 0 ? close / refClose : 1.0
+
+// ------------------------------------------------------------------ outils
+parseSection(string txt, string key) =>
+    string res = ""
+    for part in str.split(txt, "||")
+        if str.startswith(part, key + "|")
+            res := str.substring(part, str.length(key) + 1)
+    res
+
+levelColor(string name) =>
+    u = str.upper(name)
+    color c = color.blue
+    if str.contains(u, "CALL") or str.contains(u, "VENTE") or str.contains(u, "RESIST")
+        c := color.red
+    else if str.contains(u, "PUT") or str.contains(u, "ACHAT") or str.contains(u, "SUPPORT")
+        c := color.green
+    else if str.contains(u, "BASCULE") or str.contains(u, "FLIP") or str.contains(u, "HVL") or str.contains(u, "TRIGGER")
+        c := color.orange
+    else if str.contains(u, "INVALID")
+        c := color.gray
+    else if str.contains(u, "POC") or str.contains(u, "VALEUR")
+        c := color.purple
+    else if str.contains(u, "OBJECTIF")
+        c := color.aqua
+    c
+
+regimeColor(string r) =>
+    r == "Tendance haussière" or r == "Légèrement haussier" ? color.lime : r == "Tendance baissière" or r == "Légèrement baissier" ? color.red : r == "Range" ? color.yellow : color.silver
+
+// même classification que le bot (ADX, pente de l'EMA 50 en ATR, position du prix)
+f_regime() =>
+    [dip, dim, adxV] = ta.dmi(14, 14)
+    e20r = ta.ema(close, 20)
+    e50r = ta.ema(close, 50)
+    atrR = ta.atr(14)
+    slope = atrR > 0 ? (e50r - e50r[10]) / atrR : 0.0
+    bull = close > e50r and e20r > e50r and slope > 0.2
+    bear = close < e50r and e20r < e50r and slope < -0.2
+    string r = "Indécis"
+    if adxV >= 23 and bull and slope > 0.5
+        r := "Tendance haussière"
+    else if adxV >= 23 and bear and slope < -0.5
+        r := "Tendance baissière"
+    else if adxV < 20
+        r := "Range"
+    else if bull
+        r := "Légèrement haussier"
+    else if bear
+        r := "Légèrement baissier"
+    r
+
+f_trend() =>
+    e20t = ta.ema(close, 20)
+    e50t = ta.ema(close, 50)
+    e20t > e50t and close > e50t ? 1 : e20t < e50t and close < e50t ? -1 : 0
+
+// ------------------------------------------------------------------ niveaux en direct
+vwapV = ta.vwap(hlc3)
+plot(showVwap and timeframe.isintraday ? vwapV : na, "VWAP", color=color.new(color.yellow, 0), linewidth=2)
+
+[pdh, pdl, pdc] = request.security(syminfo.tickerid, "D", [high[1], low[1], close[1]], lookahead=barmerge.lookahead_on)
+plot(showPrev ? pdh : na, "Haut d'hier", color=color.new(color.red, 20), style=plot.style_stepline)
+plot(showPrev ? pdl : na, "Bas d'hier", color=color.new(color.green, 20), style=plot.style_stepline)
+plot(showPrev ? pdc : na, "Clôture d'hier", color=color.new(color.gray, 20), style=plot.style_stepline)
+
+inON = not na(time(timeframe.period, "1800-0930", "America/New_York"))
+var float onH = na
+var float onL = na
+if inON and not inON[1]
+    onH := high
+    onL := low
+else if inON
+    onH := math.max(onH, high)
+    onL := math.min(onL, low)
+plot(showON and timeframe.isintraday ? onH : na, "Haut de la nuit", color=color.new(color.fuchsia, 20), style=plot.style_stepline)
+plot(showON and timeframe.isintraday ? onL : na, "Bas de la nuit", color=color.new(color.fuchsia, 20), style=plot.style_stepline)
+
+e20 = ta.ema(close, 20)
+e50 = ta.ema(close, 50)
+e200 = ta.ema(close, 200)
+plot(showEma ? e20 : na, "EMA 20", color=color.new(color.teal, 0))
+plot(showEma ? e50 : na, "EMA 50", color=color.new(color.blue, 0))
+plot(showEma ? e200 : na, "EMA 200", color=color.new(color.white, 30), linewidth=2)
+
+// ------------------------------------------------------------------ type de marché
+rCur = f_regime()
+rHtf = request.security(syminfo.tickerid, htf, f_regime())
+rD1 = request.security(syminfo.tickerid, "D", f_regime())
+
+// ------------------------------------------------------------------ signaux (repli dans la tendance)
+htfTrend = request.security(syminfo.tickerid, htf, f_trend()[1], lookahead=barmerge.lookahead_on)
+rsiV = ta.rsi(close, 14)
+atr14 = ta.atr(14)
+longRaw = htfTrend == 1 and ta.lowest(low, 3) <= e20 + 0.3 * atr14 and close > e20 and close > e50 and rsiV >= 50 and rsiV <= 68 and ta.lowest(rsiV, 8) < 48 and close > open
+shortRaw = htfTrend == -1 and ta.highest(high, 3) >= e20 - 0.3 * atr14 and close < e20 and close < e50 and rsiV <= 50 and rsiV >= 32 and ta.highest(rsiV, 8) > 52 and close < open
+newLong = showSig and longRaw and not longRaw[1]
+newShort = showSig and shortRaw and not shortRaw[1]
+plotshape(newLong, "Signal d'achat", shape.triangleup, location.belowbar, color.new(color.lime, 0), size=size.small, text="Achat")
+plotshape(newShort, "Signal de vente", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.small, text="Vente")
+alertcondition(newLong, "SignalBot : signal d'achat", "SignalBot : repli acheteur sur {{ticker}} à {{close}}")
+alertcondition(newShort, "SignalBot : signal de vente", "SignalBot : repli vendeur sur {{ticker}} à {{close}}")
+
+// ------------------------------------------------------------------ niveaux du bot (/tv)
+var array<line> drawnLines = array.new<line>()
+var array<label> drawnLabels = array.new<label>()
+var array<float> lvPrices = array.new<float>()
+var array<string> lvNames = array.new<string>()
+var string biasTxt = "n/d"
+var string gammaTxt = "n/d"
+var string dateTxt = ""
+
+if barstate.islast
+    for ln in drawnLines
+        line.delete(ln)
+    for lb in drawnLabels
+        label.delete(lb)
+    array.clear(drawnLines)
+    array.clear(drawnLabels)
+    array.clear(lvPrices)
+    array.clear(lvNames)
+    biasTxt := "n/d"
+    gammaTxt := "n/d"
+    dateTxt := ""
+    sec = parseSection(str.replace_all(levelsTxt, "\n", ""), mkt)
+    if str.length(sec) > 0
+        for item in str.split(sec, ";")
+            if str.startswith(item, "BIAS=")
+                biasTxt := str.substring(item, 5)
+            else if str.startswith(item, "GAMMA=")
+                gammaTxt := str.substring(item, 6)
+            else if str.startswith(item, "DATE=")
+                dateTxt := str.substring(item, 5)
+            else
+                kv = str.split(item, ":")
+                if array.size(kv) >= 2
+                    p = str.tonumber(array.get(kv, 0))
+                    if not na(p)
+                        name = array.get(kv, 1)
+                        price = p * ratio
+                        col = levelColor(name)
+                        array.push(drawnLines, line.new(bar_index - 60, price, bar_index + extendBars, price, color=col, width=2, style=line.style_dashed))
+                        array.push(drawnLabels, label.new(bar_index + extendBars, price, name + "  " + str.tostring(price, format.mintick), color=color.new(col, 80), textcolor=col, style=label.style_label_left, size=size.small))
+                        array.push(lvPrices, price)
+                        array.push(lvNames, name)
+
+// alerte quand le prix croise un niveau du bot (à la clôture de la bougie)
+if barstate.isrealtime and barstate.isconfirmed and array.size(lvPrices) > 0
+    for i = 0 to array.size(lvPrices) - 1
+        lv = array.get(lvPrices, i)
+        if (close[1] < lv and close >= lv) or (close[1] > lv and close <= lv)
+            alert("SignalBot : " + syminfo.ticker + " croise " + array.get(lvNames, i) + " (" + str.tostring(lv, format.mintick) + ")", alert.freq_once_per_bar_close)
+
+// ------------------------------------------------------------------ tableau
+var table tb = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 25), border_width=1)
+if showTable and barstate.islast
+    table.cell(tb, 0, 0, "SignalBot " + mkt, text_color=color.white, text_size=size.small)
+    table.cell(tb, 1, 0, dateTxt == "" ? "colle la ligne /tv" : "niveaux du " + dateTxt, text_color=color.silver, text_size=size.small)
+    table.cell(tb, 0, 1, "Ce graphique", text_color=color.silver, text_size=size.small)
+    table.cell(tb, 1, 1, rCur, text_color=regimeColor(rCur), text_size=size.small)
+    table.cell(tb, 0, 2, "Tendance de fond", text_color=color.silver, text_size=size.small)
+    table.cell(tb, 1, 2, rHtf, text_color=regimeColor(rHtf), text_size=size.small)
+    table.cell(tb, 0, 3, "Jour", text_color=color.silver, text_size=size.small)
+    table.cell(tb, 1, 3, rD1, text_color=regimeColor(rD1), text_size=size.small)
+    table.cell(tb, 0, 4, "Biais de l'IA", text_color=color.silver, text_size=size.small)
+    table.cell(tb, 1, 4, biasTxt, text_color=biasTxt == "haussier" ? color.lime : biasTxt == "baissier" ? color.red : color.silver, text_size=size.small)
+    table.cell(tb, 0, 5, "Gamma des options", text_color=color.silver, text_size=size.small)
+    table.cell(tb, 1, 5, gammaTxt == "positif" ? "positif (marché amorti)" : gammaTxt == "négatif" ? "négatif (mouvements amplifiés)" : gammaTxt, text_color=gammaTxt == "positif" ? color.lime : gammaTxt == "négatif" ? color.red : color.silver, text_size=size.small)
+    table.cell(tb, 0, 6, "Prix vs VWAP", text_color=color.silver, text_size=size.small)
+    table.cell(tb, 1, 6, close > vwapV ? "au-dessus (acheteurs)" : "en dessous (vendeurs)", text_color=close > vwapV ? color.lime : color.red, text_size=size.small)

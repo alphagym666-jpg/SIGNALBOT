@@ -47,6 +47,7 @@ Après `/start`, un **menu à boutons avec icônes** reste affiché en bas de Te
 | `/brief` | Plan de match du jour |
 | `/analyse` | 🧠 Analyse IA complète : ce qui se trame, scénarios, zones, invalidation |
 | `/sg nq call 25000 put 24000 flip 24500` | Taper tes niveaux SpotGamma du jour (en prix NQ/or ou QQQ/GLD) |
+| `/tv` | Ligne de niveaux à coller dans l'indicateur TradingView |
 | `/niveaux` | Niveaux clés : gamma des options, particuliers, COT |
 | `/resume` | Résumé : le marché penche vers où, et les taux ? |
 | `/news` | Seulement les news à fort impact, expliquées |
@@ -93,6 +94,28 @@ docker run -d --name signalbot --env-file .env -v $(pwd)/data:/app/data --restar
 Pour recevoir les alertes 24/7, fais tourner le bot sur un serveur toujours allumé (VPS, Raspberry Pi, Railway, Fly.io…).
 
 ---
+
+## 📺 Indicateur TradingView « SignalBot Niveaux »
+
+Le fichier [`tradingview/SignalBot_Niveaux.pine`](tradingview/SignalBot_Niveaux.pine) affiche sur ton graphique :
+- **les niveaux du bot** : murs gamma, bascule gamma, tes niveaux SpotGamma (`/sg`), profil de volume d'hier (POC, zone de valeur) et les zones de l'**analyse IA** (achat 🟢, vente 🔴, invalidation ⚪, objectif 🔵) ;
+- **en direct** : VWAP, haut / bas / clôture d'hier, haut / bas de la nuit, EMA 20 / 50 / 200 ;
+- un **tableau** : type de marché (ce graphique, tendance de fond, jour), biais de l'IA, gamma, prix vs VWAP ;
+- les **signaux** « repli dans la tendance » du bot (triangles) et des **alertes**.
+
+**Installation (une seule fois)**
+1. Ouvre le fichier `tradingview/SignalBot_Niveaux.pine` (Bloc-notes) et copie tout (Ctrl+A, Ctrl+C).
+2. Dans TradingView : en bas, onglet **Pine Editor** → supprime le contenu → colle → **Enregistrer** → **Ajouter au graphique**.
+3. Fais la même chose sur ton graphique de l'or (ou ajoute l'indicateur depuis « Mes scripts »).
+
+**Chaque matin (10 secondes)**
+1. Dans Telegram : bouton **📺 TradingView** (ou `/tv`). La ligne est aussi à la fin du brief du matin.
+2. Copie la ligne → roue dentée de l'indicateur → colle dans « Ligne copiée depuis /tv ».
+La même ligne sert pour le Nasdaq et pour l'or : l'indicateur reconnaît le marché et convertit les prix des contrats à terme (NQ1!, GC1!) au prix de ton graphique (NAS100, US100, XAUUSD...).
+
+**Alertes TradingView** : clic droit sur le graphique → Ajouter une alerte → condition « SignalBot Niveaux » :
+- « N'importe quel appel de la fonction alert() » : le prix croise un niveau du bot ;
+- « SignalBot : signal d'achat / de vente » : nouveau signal de repli.
 
 ## Comment ça marche
 

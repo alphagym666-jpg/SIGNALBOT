@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 
 BIAS = ("haussier", "baissier", "neutre")
 CONFIDENCE = ("faible", "moyenne", "forte")
+PLAN_KINDS = ("achat", "vente", "invalidation", "objectif")
 
 SYSTEM = """Tu es le stratège de marché personnel d'un trader francophone (Québec) qui trade \
 UNIQUEMENT le Nasdaq 100 (NQ) et l'or (XAUUSD). Ton travail : filtrer toute l'information reçue \
@@ -44,7 +45,8 @@ du dollar et du sentiment).
 - markets : une entrée pour NQ et une pour XAU :
   bias, confidence, whats_happening (2-3 phrases), main_scenario, alt_scenario, buy_zones, \
 sell_zones, invalidation (le niveau qui annule le scénario principal), avoid (ce qu'il vaut \
-mieux ne pas faire aujourd'hui)."""
+mieux ne pas faire aujourd'hui), plan_levels : 2 à 6 prix exacts tirés des données, à tracer \
+sur le graphique (kind : « achat », « vente », « invalidation » ou « objectif », note : 2-4 mots)."""
 
 SCHEMA = {
     "type": "object",
@@ -66,9 +68,23 @@ SCHEMA = {
                     "sell_zones": {"type": "string"},
                     "invalidation": {"type": "string"},
                     "avoid": {"type": "string"},
+                    "plan_levels": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "price": {"type": "number"},
+                                "kind": {"type": "string", "enum": list(PLAN_KINDS)},
+                                "note": {"type": "string"},
+                            },
+                            "required": ["price", "kind", "note"],
+                            "additionalProperties": False,
+                        },
+                    },
                 },
                 "required": ["key", "bias", "confidence", "whats_happening", "main_scenario",
-                             "alt_scenario", "buy_zones", "sell_zones", "invalidation", "avoid"],
+                             "alt_scenario", "buy_zones", "sell_zones", "invalidation", "avoid",
+                             "plan_levels"],
                 "additionalProperties": False,
             },
         },
@@ -99,6 +115,7 @@ class MarketPlan:
     sell_zones: str = ""
     invalidation: str = ""
     avoid: str = ""
+    plan_levels: list[dict] = field(default_factory=list)
 
 
 @dataclass
