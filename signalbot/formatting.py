@@ -6,10 +6,12 @@ import html
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from .config import Instrument
+from .config import INSTRUMENTS, Instrument
 from .news import EconEvent, NewsItem
 from .news_explain import Digest, NewsExplanation
 from .positioning import Positioning
+from .analysis import Analysis, MarketInput
+from .levels import Level
 from .regime import Regime, market_view
 from .signals import Signal
 from .stocks import StockReport
@@ -271,4 +273,73 @@ def news_report(n: NewsItem, x: NewsExplanation, moves: dict[str, float], report
         if x.reaction:
             lines.append(f"🎯 <b>Réaction probable :</b> {e(x.reaction)}")
     lines.append(f"🔗 <a href=\"{attr(n.link)}\">Lire l'article</a>")
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ niveaux et analyse IA
+
+def levels_block(levels: list[Level], price: float | None, limit: int = 14) -> str:
+    """Niveaux triés du plus haut au plus bas, avec le prix actuel placé au bon endroit."""
+    if not levels:
+        return "   (aucun niveau disponible)"
+    rows = sorted(levels, key=lambda lv: lv.price, reverse=True)
+    if price is not None and len(rows) > limit:  # on garde les plus proches du prix
+        rows = sorted(sorted(rows, key=lambda lv: abs(lv.price - price))[:limit],
+                      key=lambda lv: lv.price, reverse=True)
+    lines, placed = [], price is None
+    for lv in rows:
+        if not placed and lv.price < price:
+            lines.append(f"   ➡️ <b>prix actuel {price:,.2f}</b>")
+            placed = True
+        lines.append(f"   {'🔺' if price is not None and lv.price >= price else '🔻'} {lv.price:,.2f} — "
+                     f"{e(lv.label)}")
+    if not placed:
+        lines.append(f"   ➡️ <b>prix actuel {price:,.2f}</b>")
+    return "\n".join(lines)
+
+
+_BIAS_BIG = {"haussier": "📈 HAUSSIER", "baissier": "📉 BAISSIER", "neutre": "➖ NEUTRE"}
+
+
+def analysis_message(a: Analysis, inputs: list[MarketInput], tz: ZoneInfo) -> str:
+    by_key = {m.key: m for m in inputs}
+    lines = [f"🧠 <b>Ce qui se trame sur le marché</b> · {now_str(tz)}", "", e(a.overview)]
+    if a.risk_events:
+        lines += ["", "⚠️ <b>Événements à risque</b>", *[f"• {e(x)}" for x in a.risk_events]]
+    for p in a.markets:
+        m = by_key.get(p.key)
+        inst = INSTRUMENTS[p.key]
+        price = f" — {m.price:,.2f}" if m and m.price is not None else ""
+        lines += ["", "━━━━━━━━━━━━━━━━", f"📊 <b>{e(inst.name)}</b>{price}",
+                  f"Biais : <b>{_BIAS_BIG.get(p.bias, p.bias)}</b> (confiance {e(p.confidence)})",
+                  f"🔎 <b>Ce qui se passe :</b> {e(p.whats_happening)}"]
+        for icon, title, text in (("🎯", "Scénario principal", p.main_scenario),
+                                  ("🔀", "Scénario alternatif", p.alt_scenario),
+                                  ("🟢", "Zones d'achat à surveiller", p.buy_zones),
+                                  ("🔴", "Zones de vente à surveiller", p.sell_zones),
+                                  ("⛔", "Invalidation", p.invalidation),
+                                  ("🚫", "À éviter", p.avoid)):
+            if text:
+                lines.append(f"{icon} <b>{title} :</b> {e(text)}")
+        if m and m.levels:
+            lines += ["📏 <b>Niveaux clés</b>", levels_block(m.levels, m.price, limit=8)]
+    lines += ["", DISCLAIMER]
+    return "\n".join(lines)
+
+
+def level_alert(inst: Instrument, lv: Level, price: float, from_below: bool, above: Level | None,
+                below: Level | None) -> str:
+    dist = abs(lv.price - price)
+    lines = [f"📍 <b>{e(inst.name)} approche un niveau clé</b>",
+             f"Prix {price:,.2f} → <b>{e(lv.label)} {lv.price:,.2f}</b> "
+             f"(à {dist:,.2f}, {'par le bas' if from_below else 'par le haut'})",
+             f"Rôle : {e(lv.role)}",
+             "👉 Regarde la réaction : " + ("un rejet = vendeurs présents, une cassure franche = continuation "
+                                           "vers le haut" if from_below else
+                                           "un rebond = acheteurs présents, une cassure franche = continuation "
+                                           "vers le bas")]
+    if above:
+        lines.append(f"🔺 Niveau suivant au-dessus : {above.price:,.2f} ({e(above.label)})")
+    if below:
+        lines.append(f"🔻 Niveau suivant en dessous : {below.price:,.2f} ({e(below.label)})")
     return "\n".join(lines)

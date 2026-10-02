@@ -4,6 +4,8 @@ Bot Telegram qui t'aide à **comprendre le marché** avant de trader :
 
 | Fonction | Ce que ça fait |
 |---|---|
+| 🧠 **Analyse IA : ce qui se trame** | Claude reçoit TOUT (type de marché D1/H4/H1, niveaux, gamma, SpotGamma, positionnement, news, calendrier, dollar, taux, VIX) et te dit clairement, pour le Nasdaq et l'or : le biais et la confiance, ce qui se passe, le scénario principal et l'alternatif, les zones d'achat et de vente à surveiller, le niveau d'invalidation et ce qu'il faut éviter aujourd'hui. Chaque matin dans le brief et sur demande. |
+| 📏 **Niveaux pros** | VWAP, haut / bas / clôture d'hier, haut / bas de la nuit, profil de volume d'hier (POC, zone de valeur), murs gamma, et tes niveaux **SpotGamma** tapés avec `/sg`. **Alerte** quand le prix s'en approche. |
 | 🧭 **Type de marché** | Pour le Nasdaq 100 (NQ) et l'or (XAUUSD) : tendance haussière/baissière, **range**, **indécis** ou **volatil**, sur 3 unités de temps (D1, H4, H1), avec une phrase simple sur quoi faire. |
 | 🎯 **Signaux d'achat/vente** | Seulement quand plusieurs éléments concordent (tendance H4/D1, repli, RSI, volume…). Chaque signal a un score /100, une entrée, un stop et 2 objectifs. Pénalisé si une annonce importante arrive bientôt. |
 | 🚨 **Alerte gros mouvement** | Dès que le prix bouge fort (ex. −0.6 % en 15 min sur NQ), alerte immédiate **avec l'explication** : news récentes, annonce économique qui vient de sortir, dollar, taux, VIX… |
@@ -23,7 +25,9 @@ Bot Telegram qui t'aide à **comprendre le marché** avant de trader :
 Après `/start`, un **menu à boutons avec icônes** reste affiché en bas de Telegram :
 
 ```
-[ 📊 Marché            ] [ 🎯 Signaux              ]
+[ 🧠 Analyse IA : ce qui se trame                ]
+[ 📊 Marché            ] [ 🎯 Niveaux clés         ]
+[ 🎯 Signaux           ] [ ❓ Pourquoi ça bouge    ]
 [ 🧭 Résumé des news  ] [ 🔥 News fort impact     ]
 [ ❓ Pourquoi ça bouge ] [ 🗓️ Calendrier           ]
 [ ☀️ Brief du jour     ] [ 📈 Opportunités actions ]
@@ -41,6 +45,8 @@ Après `/start`, un **menu à boutons avec icônes** reste affiché en bas de Te
 | `/signaux` | Meilleur setup du moment pour chaque marché |
 | `/pourquoi nq` / `/pourquoi or` | Pourquoi ça bouge en ce moment |
 | `/brief` | Plan de match du jour |
+| `/analyse` | 🧠 Analyse IA complète : ce qui se trame, scénarios, zones, invalidation |
+| `/sg nq call 25000 put 24000 flip 24500` | Taper tes niveaux SpotGamma du jour (en prix NQ/or ou QQQ/GLD) |
 | `/niveaux` | Niveaux clés : gamma des options, particuliers, COT |
 | `/resume` | Résumé : le marché penche vers où, et les taux ? |
 | `/news` | Seulement les news à fort impact, expliquées |

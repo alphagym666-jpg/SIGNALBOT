@@ -133,6 +133,10 @@ class Settings:
     digest_times: list[str] = field(
         default_factory=lambda: [t.strip() for t in _env("DIGEST_TIMES", "07:30,12:00,16:30").split(",")
                                  if t.strip()])
+    # Alertes quand le prix approche d'un niveau clé (gamma, SpotGamma, haut/bas d'hier, POC...)
+    level_alerts: bool = _env("LEVEL_ALERTS", "1") not in ("0", "false", "no")
+    level_alert_pct: float = _env_float("LEVEL_ALERT_PCT", 0.1)  # distance en % du prix
+    level_alerts_per_hour: int = _env_int("LEVEL_ALERTS_PER_HOUR", 4)
     # Rappel avant une annonce économique importante (minutes)
     calendar_reminder_minutes: int = _env_int("CALENDAR_REMINDER_MINUTES", 30)
 

@@ -16,10 +16,12 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, Con
 
 from . import ai, data, formatting as fmt
 from .config import INSTRUMENTS, Instrument, settings
-from .moves import current_move, detect_move, explain
+from .analysis import MarketInput, analyze as ai_analyze
+from .levels import Level, manual_levels, parse_manual, pro_levels
+from .moves import cross_market_context, current_move, detect_move, explain
 from .news import NewsItem, events_between, fetch_calendar, fetch_news, relevant_news
 from .news_explain import NewsExplanation, digest as news_digest, explain as explain_news
-from .positioning import myfxbook_enabled, positioning, summary_for_ai
+from .positioning import SOURCES, myfxbook_enabled, positioning, summary_for_ai
 from .regime import Regime, classify
 from .signals import Signal, evaluate
 from .state import State
@@ -35,10 +37,12 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 👇 Le plus simple : utilise les <b>boutons en bas</b> (ou /menu pour les réafficher).
 
 <b>Marché</b>
+/analyse — 🧠 l'IA filtre tout et te dit ce qui se trame : biais, scénarios, zones, invalidation
 /marche — type de marché (tendance, range, indécis…) pour NQ et l'or
 /signaux — meilleurs setups d'achat/vente du moment
 /pourquoi nq | or — pourquoi le prix bouge en ce moment
-/niveaux — niveaux clés : gamma des options, sentiment des particuliers, COT
+/niveaux — niveaux clés : gamma, VWAP, haut/bas d'hier et de la nuit, profil de volume, COT
+/sg nq call 25000 put 24000 flip 24500 — taper tes niveaux SpotGamma du jour
 /brief — plan de match du jour
 
 <b>News</b>
@@ -55,7 +59,7 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 🚨 Alerte + explication dès qu'un gros mouvement arrive
 🎯 Signaux de qualité (score ≥ {min_score}/100)
 📣 Compte rendu d'une news seulement quand elle fait bouger le marché
-🧭 Résumé des news ({digest})
+🧭 Résumé des news ({digest}) · 📍 Alerte quand le prix approche d'un niveau clé
 ⏰ Rappel {reminder} min avant les annonces
 ☀️ Brief chaque matin ({brief}) · 📈 Rapport actions ({stocks})"""
 
@@ -66,6 +70,7 @@ BTN_SIGNAUX = "🎯 Signaux"
 BTN_NEWS = "🔥 News fort impact"
 BTN_RESUME = "🧭 Résumé des news"
 BTN_NIVEAUX = "🎯 Niveaux clés"
+BTN_ANALYSE = "🧠 Analyse IA : ce qui se trame"
 BTN_CALENDRIER = "🗓️ Calendrier"
 BTN_POURQUOI = "❓ Pourquoi ça bouge"
 BTN_BRIEF = "☀️ Brief du jour"
@@ -75,12 +80,13 @@ BTN_WATCHLIST = "👀 Watchlist"
 BTN_AIDE = "ℹ️ Aide"
 
 MAIN_MENU = ReplyKeyboardMarkup(
-    [[BTN_MARCHE, BTN_SIGNAUX],
+    [[BTN_ANALYSE],
+     [BTN_MARCHE, BTN_NIVEAUX],
+     [BTN_SIGNAUX, BTN_POURQUOI],
      [BTN_RESUME, BTN_NEWS],
-     [BTN_POURQUOI, BTN_CALENDRIER],
-     [BTN_BRIEF, BTN_STOCKS],
-     [BTN_STOCK, BTN_WATCHLIST],
-     [BTN_NIVEAUX, BTN_AIDE]],
+     [BTN_CALENDRIER, BTN_BRIEF],
+     [BTN_STOCKS, BTN_STOCK],
+     [BTN_WATCHLIST, BTN_AIDE]],
     resize_keyboard=True,
     is_persistent=True,
     input_field_placeholder="Choisis une option 👇",
@@ -100,11 +106,13 @@ WATCHLIST_MENU = InlineKeyboardMarkup([[
 
 BOT_COMMANDS = [
     BotCommand("menu", "🏠 Afficher le menu"),
+    BotCommand("analyse", "🧠 Analyse IA : ce qui se trame sur NQ et l'or"),
     BotCommand("marche", "📊 Type de marché (tendance, range…)"),
     BotCommand("signaux", "🎯 Signaux d'achat / vente"),
     BotCommand("resume", "🧭 Résumé : le marché penche vers où ?"),
     BotCommand("news", "🔥 News à fort impact expliquées"),
-    BotCommand("niveaux", "🎯 Niveaux clés : gamma, particuliers, COT"),
+    BotCommand("niveaux", "🎯 Niveaux clés : gamma, VWAP, profil de volume…"),
+    BotCommand("sg", "✍️ Taper les niveaux SpotGamma (ex. /sg nq call 25000)"),
     BotCommand("calendrier", "🗓️ Annonces économiques"),
     BotCommand("pourquoi", "❓ Pourquoi ça bouge (nq / or)"),
     BotCommand("brief", "☀️ Plan de match du jour"),
@@ -312,12 +320,120 @@ def _positioning_all() -> list:
     return [positioning(k) for k in INSTRUMENTS]
 
 
+MANUAL_TTL = 20 * 3600  # les niveaux SpotGamma tapés valent pour la journée
+
+
+def _etf_ratio(key: str) -> float | None:
+    """Rapport prix de l'instrument / prix de l'ETF (QQQ ou GLD) pour convertir les niveaux."""
+    etf = data.history(SOURCES[key][0], "5d", "1d", ttl=600)
+    inst = data.history(INSTRUMENTS[key].ticker, "5d", "1d", ttl=600)
+    if etf.empty or inst.empty:
+        return None
+    return float(inst["Close"].iloc[-1]) / float(etf["Close"].iloc[-1])
+
+
+def _manual_entries(key: str) -> dict[str, float]:
+    entry = state.data.get("manual_levels", {}).get(key)
+    if not entry or datetime.now(timezone.utc).timestamp() - entry["ts"] > MANUAL_TTL:
+        return {}
+    return entry["levels"]
+
+
+def _all_levels(key: str, pos=None) -> tuple[float | None, list[Level]]:
+    """Prix actuel + tous les niveaux : profil de volume / VWAP / hier / nuit, gamma, SpotGamma."""
+    inst = INSTRUMENTS[key]
+    pro = pro_levels(key, inst.ticker)
+    price = pro.price if pro else _price(inst)
+    levels = list(pro.levels) if pro else []
+    g = (pos or positioning(key)).gamma
+    if g:
+        for label, value, role in (("Call wall (options)", g.call_wall, "plus grosse résistance des options"),
+                                   ("Put wall (options)", g.put_wall, "plus gros support des options"),
+                                   ("Bascule gamma (options)", g.flip,
+                                    "au-dessus = marché calme, en dessous = marché nerveux")):
+            if value:
+                levels.append(Level(label, value, role))
+    manual = _manual_entries(key)
+    if manual and price:
+        levels += manual_levels(manual, price, _etf_ratio(key))
+    return price, levels
+
+
 async def _niveaux_text() -> str:
     positions = await asyncio.to_thread(_positioning_all)
-    blocks = [fmt.positioning_block(INSTRUMENTS[p.instrument], p, myfxbook_enabled()) for p in positions]
+    blocks = []
+    for p in positions:
+        price, levels = await asyncio.to_thread(_all_levels, p.instrument, p)
+        blocks.append(fmt.positioning_block(INSTRUMENTS[p.instrument], p, myfxbook_enabled())
+                      + "\n📏 <b>Niveaux du jour</b>\n" + fmt.levels_block(levels, price))
     return ("🎯 <b>Niveaux clés et positionnement</b>\n\n" + "\n\n".join(blocks)
             + "\n\n<i>Gamma estimé à partir des options QQQ (Nasdaq) et GLD (or), converti en prix "
               "NQ / XAU. Les murs agissent souvent comme aimants ou barrières, pas comme des garanties.</i>")
+
+
+def _market_inputs() -> list[MarketInput]:
+    out = []
+    for key, inst in INSTRUMENTS.items():
+        _, regimes = _analyze(inst)
+        pos = positioning(key)
+        price, levels = _all_levels(key, pos)
+        out.append(MarketInput(key, price, regimes, levels, pos))
+    return out
+
+
+async def _analysis_text() -> str:
+    inputs, items, events, context = await asyncio.gather(
+        asyncio.to_thread(_market_inputs), asyncio.to_thread(fetch_news, 14),
+        asyncio.to_thread(fetch_calendar), asyncio.to_thread(cross_market_context))
+    news = relevant_news(items, None, min_score=settings.min_news_score)
+    result = await ai_analyze(inputs, news, events, context, settings.timezone)
+    return fmt.analysis_message(result, inputs, settings.timezone)
+
+
+@restricted
+async def cmd_analyse(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_chat.send_message("🧠 Je rassemble tout (news, niveaux, positionnement, "
+                                             "taux, dollar…) et j'analyse. Ça prend environ une minute…")
+    await reply(update, await _analysis_text())
+
+
+SG_HELP = ("✍️ <b>Niveaux SpotGamma</b>\n"
+           "Exemples :\n<code>/sg nq call 25000 put 24000 flip 24500</code>\n"
+           "<code>/sg or call 4300 put 4100 hvl 4200</code>\n"
+           "<code>/sg nq effacer</code>\n\n"
+           "Mots reconnus : call, put, flip / hvl / zero, vt (volatility trigger), abs (absolute gamma), "
+           "ou n'importe quel nom. Tu peux taper les niveaux en prix NQ / or, ou en prix QQQ / GLD : "
+           "le bot convertit tout seul. Ils restent valides pour la journée.")
+
+
+@restricted
+async def cmd_sg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args or []
+    insts = _find_instrument(args[0]) if args else []
+    if not args or len(insts) != 1:
+        current = []
+        for key, inst in INSTRUMENTS.items():
+            entries = _manual_entries(key)
+            if entries:
+                current.append(f"{fmt.e(inst.name)} : " + ", ".join(f"{fmt.e(k)} {v:g}" for k, v in entries.items()))
+        await reply(update, SG_HELP + ("\n\n<b>Niveaux enregistrés</b>\n" + "\n".join(current) if current else ""))
+        return
+    key = insts[0].key
+    store = state.data.setdefault("manual_levels", {})
+    if len(args) > 1 and args[1].lower() in ("effacer", "clear", "reset", "supprimer"):
+        store.pop(key, None)
+        state.save()
+        await reply(update, f"🗑️ Niveaux SpotGamma effacés pour {fmt.e(insts[0].name)}.")
+        return
+    entries = parse_manual(args[1:])
+    if not entries:
+        await reply(update, SG_HELP)
+        return
+    store[key] = {"ts": datetime.now(timezone.utc).timestamp(), "levels": entries}
+    state.save()
+    await reply(update, f"✅ Niveaux SpotGamma enregistrés pour <b>{fmt.e(insts[0].name)}</b> : "
+                + ", ".join(f"{fmt.e(k)} {v:g}" for k, v in entries.items())
+                + "\nIls apparaissent dans 🎯 Niveaux clés, l'analyse IA et les alertes de niveaux.")
 
 
 @restricted
@@ -468,7 +584,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.message.text or "").strip()
     actions = {
         BTN_MARCHE: cmd_marche, BTN_SIGNAUX: cmd_signaux, BTN_NEWS: cmd_news, BTN_RESUME: cmd_resume,
-        BTN_NIVEAUX: cmd_niveaux,
+        BTN_NIVEAUX: cmd_niveaux, BTN_ANALYSE: cmd_analyse,
         BTN_CALENDRIER: cmd_calendrier, BTN_BRIEF: cmd_brief, BTN_STOCKS: cmd_stocks,
         BTN_AIDE: cmd_help,
     }
@@ -501,49 +617,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _brief_text() -> str:
     tz = settings.timezone
-    now = datetime.now(timezone.utc)
-    blocks = []
-    for inst in INSTRUMENTS.values():
-        _, regimes = await asyncio.to_thread(_analyze, inst)
-        blocks.append(fmt.regime_block(inst, regimes))
     events = await asyncio.to_thread(fetch_calendar)
     local_today = datetime.now(tz).date()
     today = [ev for ev in events if ev.time.astimezone(tz).date() == local_today]
-    items = await asyncio.to_thread(fetch_news, 14)
-    top = relevant_news(items, None, min_score=settings.min_news_score)[:30]
-
-    lines = [f"☀️ <b>Brief du {fmt.fr_date(datetime.now(tz), '%A %d %B')}</b>", "", *blocks, ""]
-    lines.append("🗓️ <b>Annonces du jour</b>")
+    lines = [f"☀️ <b>Brief du {fmt.fr_date(datetime.now(tz), '%A %d %B')}</b>", "",
+             "🗓️ <b>Annonces du jour</b>"]
     lines += [fmt.event_line(ev, tz) for ev in today] or ["• Aucune annonce US majeure."]
-    positions = await asyncio.to_thread(_positioning_all)
-    gamma_lines = []
-    for p in positions:
-        g = p.gamma
-        if g:
-            gamma_lines.append(f"{fmt.e(INSTRUMENTS[p.instrument].name)} : gamma "
-                               f"{'🟢 positif' if g.positive else '🔴 négatif'} · résistance {g.call_wall} · "
-                               f"support {g.put_wall} · bascule {g.flip}")
-    if gamma_lines:
-        lines += ["", "🎯 <b>Niveaux clés (options)</b>", *gamma_lines]
-    d = await news_digest(top)
-    if d:
-        lines += ["", "🧭 <b>Les news de la nuit</b>",
-                  f"Nasdaq {fmt.BIAS_SHORT.get(d.nasdaq, d.nasdaq)} · Or {fmt.BIAS_SHORT.get(d.gold, d.gold)}"
-                  f" · Taux {fmt.OUTLOOK_SHORT.get(d.rates, d.rates)} (confiance {fmt.e(d.confidence)})",
-                  fmt.e(d.summary)]
-    else:
-        lines += ["", "🧭 <b>Les news de la nuit</b>", "• Rien de majeur."]
-
-    summary = await ai.ask(
-        f"Nous sommes le {now:%Y-%m-%d}. Fais-moi un plan de match TRÈS court (6 puces max) "
-        "pour le Nasdaq 100 et l'or aujourd'hui : le sentiment général, les annonces/événements "
-        "à surveiller et les heures clés (heure de l'Est), et le risque principal.\n\n"
-        f"Annonces du jour : {', '.join(f'{e.title} {e.time.astimezone(tz):%H:%M}' for e in today) or 'aucune'}\n"
-        f"Titres récents : {' | '.join(n.title for n in top[:8]) or 'aucun'}"
-    )
-    if summary:
-        lines += ["", "🧠 <b>Plan de match</b>", fmt.e(summary)]
-    lines += ["", fmt.DISCLAIMER]
+    lines += ["", await _analysis_text()]
     return "\n".join(lines)
 
 
@@ -568,6 +648,39 @@ async def job_moves(context: ContextTypes.DEFAULT_TYPE) -> None:
         await broadcast(context, await explain(move))
     if settings.news_only_if_move:  # réaction aux news vérifiée aussi souvent que les gros mouvements
         await _check_pending_news(context)
+
+
+def _level_budget() -> int:
+    now = datetime.now(timezone.utc).timestamp()
+    sent = [t for t in state.data.get("levels_sent", []) if now - t < 3600]
+    state.data["levels_sent"] = sent
+    return max(0, settings.level_alerts_per_hour - len(sent))
+
+
+async def job_levels(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Alerte quand le prix s'approche d'un niveau clé (une seule fois par niveau et par séance)."""
+    if not settings.level_alerts:
+        return
+    for key, inst in INSTRUMENTS.items():
+        if not await asyncio.to_thread(data.is_fresh, inst.ticker):
+            continue
+        price, levels = await asyncio.to_thread(_all_levels, key)
+        before = await asyncio.to_thread(data.last_change, inst.ticker, 15)
+        if not price or not levels or not before:
+            continue
+        prev_price = price / (1 + before[1] / 100)
+        near = [lv for lv in levels if lv.label != "VWAP"
+                and abs(lv.price - price) <= price * settings.level_alert_pct / 100]
+        for lv in sorted(near, key=lambda x: abs(x.price - price)):
+            alert_key = f"level:{key}:{lv.label}:{round(lv.price)}"
+            if state.cooling_down(alert_key, 6 * 3600) or _level_budget() == 0:
+                continue
+            state.touch(alert_key)
+            state.data["levels_sent"] = state.data.get("levels_sent", []) + [datetime.now(timezone.utc).timestamp()]
+            above = min((x for x in levels if x.price > lv.price), key=lambda x: x.price, default=None)
+            below = max((x for x in levels if x.price < lv.price), key=lambda x: x.price, default=None)
+            await broadcast(context, fmt.level_alert(inst, lv, price, prev_price < lv.price, above, below))
+            break  # un seul niveau par marché à la fois
 
 
 async def job_signals(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -746,7 +859,8 @@ def build_app() -> Application:
     for name, fn in [("start", cmd_start), ("aide", cmd_help), ("help", cmd_help),
                      ("menu", cmd_menu),
                      ("marche", cmd_marche), ("signaux", cmd_signaux), ("pourquoi", cmd_pourquoi),
-                     ("news", cmd_news), ("resume", cmd_resume), ("niveaux", cmd_niveaux), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
+                     ("news", cmd_news), ("resume", cmd_resume), ("niveaux", cmd_niveaux),
+                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
                      ("stock", cmd_stock), ("watchlist", cmd_watchlist), ("ajouter", cmd_ajouter),
                      ("retirer", cmd_retirer), ("brief", cmd_brief)]:
         app.add_handler(CommandHandler(name, fn))
@@ -757,6 +871,7 @@ def build_app() -> Application:
     jq.run_repeating(job_moves, interval=settings.move_check_seconds, first=20)
     jq.run_repeating(job_signals, interval=settings.signal_check_seconds, first=40)
     jq.run_repeating(job_news, interval=settings.news_check_seconds, first=60)
+    jq.run_repeating(job_levels, interval=settings.move_check_seconds, first=90)
     jq.run_repeating(job_calendar, interval=settings.calendar_check_seconds, first=30)
     jq.run_daily(job_brief, time=_parse_time(settings.morning_brief_time), days=WEEKDAYS)
     for t in settings.digest_times:
