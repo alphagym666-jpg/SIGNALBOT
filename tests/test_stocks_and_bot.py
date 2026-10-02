@@ -71,6 +71,8 @@ def test_move_explanation_rule_based(monkeypatch):
     monkeypatch.setattr(ai.settings, "anthropic_api_key", "")
     monkeypatch.setattr(moves, "fetch_news", lambda *a: [])
     monkeypatch.setattr(moves, "fetch_calendar", lambda *a: [])
+    monkeypatch.setattr(moves, "positioning", lambda key: __import__("signalbot.positioning",
+                        fromlist=["Positioning"]).Positioning(key))
     monkeypatch.setattr(moves, "cross_market_context",
                         lambda: [("DXY (dollar US)", 104.0, 0.5), ("Taux US 10 ans", 4.3, 1.5)])
     move = moves.Move(INSTRUMENTS["XAU"], 2300.0, -0.8, -1.2, "15 min")

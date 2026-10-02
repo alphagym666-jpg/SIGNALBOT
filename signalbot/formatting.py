@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from .config import Instrument
 from .news import EconEvent, NewsItem
 from .news_explain import Digest, NewsExplanation
+from .positioning import Positioning
 from .regime import Regime, market_view
 from .signals import Signal
 from .stocks import StockReport
@@ -207,3 +208,67 @@ def stock_detail(r: StockReport) -> str:
 
 def now_str(tz: ZoneInfo) -> str:
     return fr_date(datetime.now(tz), "%a %d %b %H:%M")
+
+
+# ------------------------------------------------------------------ positionnement
+
+def _crowd_reading(long_pct: float) -> str:
+    if long_pct >= 65:
+        return "la foule est très ACHETEUSE → à contre-courant, prudence sur les achats"
+    if long_pct <= 35:
+        return "la foule est très VENDEUSE → à contre-courant, prudence sur les ventes"
+    return "positionnement équilibré, pas de signal"
+
+
+def positioning_block(inst: Instrument, p: Positioning, myfxbook_on: bool) -> str:
+    lines = [f"🎯 <b>{e(inst.name)}</b>"]
+    g = p.gamma
+    if g:
+        lines.append(f"🧲 <b>Gamma des options :</b> {'🟢 positif' if g.positive else '🔴 négatif'} "
+                     f"({g.total_gex:+.2f} G$ par 1 %)")
+        lines.append("   → " + ("les teneurs de marché amortissent les mouvements : le prix tend à rester "
+                                "entre les murs" if g.positive else
+                                "les mouvements sont amplifiés : cassures et chutes plus violentes"))
+        if g.call_wall:
+            lines.append(f"   🧱 Call wall (résistance) : <b>{g.call_wall:,.2f}</b>")
+        if g.put_wall:
+            lines.append(f"   🛡️ Put wall (support) : <b>{g.put_wall:,.2f}</b>")
+        if g.flip:
+            side = "au-dessus → plutôt calme" if g.spot >= g.flip else "en dessous → plutôt nerveux"
+            lines.append(f"   ⚖️ Bascule gamma : <b>{g.flip:,.2f}</b> (prix {side})")
+    else:
+        lines.append("🧲 Gamma des options : indisponible pour le moment")
+    if p.retail:
+        r = p.retail
+        lines.append(f"👥 <b>Particuliers (Myfxbook) :</b> {r.long_pct:.0f} % acheteurs / {r.short_pct:.0f} % "
+                     f"vendeurs → {_crowd_reading(r.long_pct)}")
+    elif inst.key == "XAU" and not myfxbook_on:
+        lines.append("👥 Particuliers : ajoute MYFXBOOK_EMAIL et MYFXBOOK_PASSWORD dans .env (compte gratuit)")
+    if p.cot:
+        c = p.cot
+        lines.append(f"🏛️ <b>COT (gros spéculateurs, {e(c.date)}) :</b> {c.net:+,} contrats nets "
+                     f"({c.net_change:+,} sur la semaine) · {c.long_pct:.0f} % acheteurs")
+    return "\n".join(lines)
+
+
+def news_report(n: NewsItem, x: NewsExplanation, moves: dict[str, float], report: str | None,
+                tz: ZoneInfo) -> str:
+    """Compte rendu d'une news qui a vraiment fait bouger le marché."""
+    react = " · ".join(f"{name} <b>{chg:+.2f} %</b>" for name, chg in moves.items())
+    lines = [
+        "📣 <b>NEWS QUI FAIT BOUGER LE MARCHÉ</b>",
+        "",
+        f"<b>{e(x.title_fr)}</b>" + ("" if x.ai else " 🇺🇸"),
+        f"<i>{e(n.source)} · {n.published.astimezone(tz):%H:%M}</i>",
+        f"📊 Réaction depuis la news : {react}",
+        f"🏦 Taux d'intérêt : {_RATES_ICON.get(x.rates, x.rates)}",
+        "",
+    ]
+    if report:
+        lines += ["🧠 <b>Compte rendu</b>", e(report)]
+    else:
+        lines += [f"📝 <b>C'est quoi :</b> {e(x.what)}", f"💥 <b>Impact :</b> {e(x.impact)}"]
+        if x.reaction:
+            lines.append(f"🎯 <b>Réaction probable :</b> {e(x.reaction)}")
+    lines.append(f"🔗 <a href=\"{attr(n.link)}\">Lire l'article</a>")
+    return "\n".join(lines)

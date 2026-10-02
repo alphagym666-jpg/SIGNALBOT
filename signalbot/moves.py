@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import ai, data
 from .config import CONTEXT_TICKERS, INSTRUMENTS, Instrument
+from .positioning import positioning, summary_for_ai
 from .news import EconEvent, NewsItem, events_between, fetch_calendar, fetch_news, relevant_news
 
 
@@ -106,10 +107,11 @@ async def explain(move: Move, alert: bool = True) -> str:
     """Construit le message Telegram (HTML) expliquant le mouvement."""
     inst = move.instrument
     now = datetime.now(timezone.utc)
-    news_items, events, context = await asyncio.gather(
+    news_items, events, context, pos = await asyncio.gather(
         asyncio.to_thread(fetch_news, 6),
         asyncio.to_thread(fetch_calendar),
         asyncio.to_thread(cross_market_context),
+        asyncio.to_thread(positioning, inst.key),
     )
     headlines = relevant_news(news_items, inst.key, since=now - timedelta(hours=3))[:6]
     recent_events = events_between(events, now - timedelta(minutes=90), now + timedelta(minutes=5))
@@ -138,8 +140,10 @@ async def explain(move: Move, alert: bool = True) -> str:
         f"Contexte inter-marchés (variation 60 min) : {ctx_line or 'indisponible'}\n\n"
         f"Annonces économiques US à fort impact dans la dernière heure et demie :\n{events_txt}\n\n"
         f"Titres de news récents (peuvent être incomplets) :\n{headline_txt}\n\n"
+        f"Niveaux clés et positionnement :\n{summary_for_ai([pos])}\n\n"
         "Explique-moi pourquoi le marché bouge comme ça en ce moment, ce que ça veut dire, "
-        "et à quoi faire attention. Si la recherche web est disponible, vérifie les toutes "
+        "et à quoi faire attention (niveaux gamma où le prix pourrait rebondir ou accélérer). "
+        "Si la recherche web est disponible, vérifie les toutes "
         "dernières nouvelles pour trouver la vraie cause."
     )
     explanation = await ai.ask(prompt)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import logging
 from datetime import datetime, time, timedelta, timezone
@@ -18,6 +19,7 @@ from .config import INSTRUMENTS, Instrument, settings
 from .moves import current_move, detect_move, explain
 from .news import NewsItem, events_between, fetch_calendar, fetch_news, relevant_news
 from .news_explain import NewsExplanation, digest as news_digest, explain as explain_news
+from .positioning import myfxbook_enabled, positioning, summary_for_ai
 from .regime import Regime, classify
 from .signals import Signal, evaluate
 from .state import State
@@ -36,6 +38,7 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 /marche — type de marché (tendance, range, indécis…) pour NQ et l'or
 /signaux — meilleurs setups d'achat/vente du moment
 /pourquoi nq | or — pourquoi le prix bouge en ce moment
+/niveaux — niveaux clés : gamma des options, sentiment des particuliers, COT
 /brief — plan de match du jour
 
 <b>News</b>
@@ -51,7 +54,8 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 <b>Automatique</b>
 🚨 Alerte + explication dès qu'un gros mouvement arrive
 🎯 Signaux de qualité (score ≥ {min_score}/100)
-🔥 News à fort impact seulement · 🧭 Résumé des news ({digest})
+📣 Compte rendu d'une news seulement quand elle fait bouger le marché
+🧭 Résumé des news ({digest})
 ⏰ Rappel {reminder} min avant les annonces
 ☀️ Brief chaque matin ({brief}) · 📈 Rapport actions ({stocks})"""
 
@@ -61,6 +65,7 @@ BTN_MARCHE = "📊 Marché"
 BTN_SIGNAUX = "🎯 Signaux"
 BTN_NEWS = "🔥 News fort impact"
 BTN_RESUME = "🧭 Résumé des news"
+BTN_NIVEAUX = "🎯 Niveaux clés"
 BTN_CALENDRIER = "🗓️ Calendrier"
 BTN_POURQUOI = "❓ Pourquoi ça bouge"
 BTN_BRIEF = "☀️ Brief du jour"
@@ -75,7 +80,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
      [BTN_POURQUOI, BTN_CALENDRIER],
      [BTN_BRIEF, BTN_STOCKS],
      [BTN_STOCK, BTN_WATCHLIST],
-     [BTN_AIDE]],
+     [BTN_NIVEAUX, BTN_AIDE]],
     resize_keyboard=True,
     is_persistent=True,
     input_field_placeholder="Choisis une option 👇",
@@ -99,6 +104,7 @@ BOT_COMMANDS = [
     BotCommand("signaux", "🎯 Signaux d'achat / vente"),
     BotCommand("resume", "🧭 Résumé : le marché penche vers où ?"),
     BotCommand("news", "🔥 News à fort impact expliquées"),
+    BotCommand("niveaux", "🎯 Niveaux clés : gamma, particuliers, COT"),
     BotCommand("calendrier", "🗓️ Annonces économiques"),
     BotCommand("pourquoi", "❓ Pourquoi ça bouge (nq / or)"),
     BotCommand("brief", "☀️ Plan de match du jour"),
@@ -302,6 +308,24 @@ async def _digest_text(hours: int = DIGEST_HOURS) -> str | None:
     return text + ("" if d.ai else NO_AI_FOOTER) + "\n\n" + fmt.DISCLAIMER
 
 
+def _positioning_all() -> list:
+    return [positioning(k) for k in INSTRUMENTS]
+
+
+async def _niveaux_text() -> str:
+    positions = await asyncio.to_thread(_positioning_all)
+    blocks = [fmt.positioning_block(INSTRUMENTS[p.instrument], p, myfxbook_enabled()) for p in positions]
+    return ("🎯 <b>Niveaux clés et positionnement</b>\n\n" + "\n\n".join(blocks)
+            + "\n\n<i>Gamma estimé à partir des options QQQ (Nasdaq) et GLD (or), converti en prix "
+              "NQ / XAU. Les murs agissent souvent comme aimants ou barrières, pas comme des garanties.</i>")
+
+
+@restricted
+async def cmd_niveaux(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_chat.send_message("🎯 Je calcule les niveaux (options, positionnement)…")
+    await reply(update, await _niveaux_text())
+
+
 @restricted
 async def cmd_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_chat.send_message("🧭 Je lis toutes les news et je fais le point…")
@@ -444,6 +468,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.message.text or "").strip()
     actions = {
         BTN_MARCHE: cmd_marche, BTN_SIGNAUX: cmd_signaux, BTN_NEWS: cmd_news, BTN_RESUME: cmd_resume,
+        BTN_NIVEAUX: cmd_niveaux,
         BTN_CALENDRIER: cmd_calendrier, BTN_BRIEF: cmd_brief, BTN_STOCKS: cmd_stocks,
         BTN_AIDE: cmd_help,
     }
@@ -490,6 +515,16 @@ async def _brief_text() -> str:
     lines = [f"☀️ <b>Brief du {fmt.fr_date(datetime.now(tz), '%A %d %B')}</b>", "", *blocks, ""]
     lines.append("🗓️ <b>Annonces du jour</b>")
     lines += [fmt.event_line(ev, tz) for ev in today] or ["• Aucune annonce US majeure."]
+    positions = await asyncio.to_thread(_positioning_all)
+    gamma_lines = []
+    for p in positions:
+        g = p.gamma
+        if g:
+            gamma_lines.append(f"{fmt.e(INSTRUMENTS[p.instrument].name)} : gamma "
+                               f"{'🟢 positif' if g.positive else '🔴 négatif'} · résistance {g.call_wall} · "
+                               f"support {g.put_wall} · bascule {g.flip}")
+    if gamma_lines:
+        lines += ["", "🎯 <b>Niveaux clés (options)</b>", *gamma_lines]
     d = await news_digest(top)
     if d:
         lines += ["", "🧭 <b>Les news de la nuit</b>",
@@ -531,6 +566,8 @@ async def job_moves(context: ContextTypes.DEFAULT_TYPE) -> None:
         state.touch(key)
         log.info("Gros mouvement %s %+.2f%% (%s)", inst.key, move.change, move.window)
         await broadcast(context, await explain(move))
+    if settings.news_only_if_move:  # réaction aux news vérifiée aussi souvent que les gros mouvements
+        await _check_pending_news(context)
 
 
 async def job_signals(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -569,6 +606,67 @@ def _news_budget() -> int:
     return max(0, settings.news_max_per_hour - len(sent))
 
 
+def _price(inst: Instrument) -> float | None:
+    ch = data.last_change(inst.ticker, 5)
+    return ch[0] if ch else None
+
+
+def _item_to_dict(n: NewsItem) -> dict:
+    return {"id": n.id, "title": n.title, "link": n.link, "source": n.source,
+            "published": n.published.isoformat(), "summary": n.summary, "score": n.score,
+            "markets": sorted(n.markets), "tags": n.tags}
+
+
+def _item_from_dict(d: dict) -> NewsItem:
+    return NewsItem(d["id"], d["title"], d["link"], d["source"], datetime.fromisoformat(d["published"]),
+                    d.get("summary", ""), d.get("score", 0), set(d.get("markets", [])), d.get("tags", []))
+
+
+async def _report_text(n: NewsItem, x: NewsExplanation, moves: dict[str, float]) -> str:
+    """Compte rendu d'une news qui a fait bouger le marché (Claude + niveaux clés)."""
+    positions = await asyncio.to_thread(_positioning_all)
+    react = ", ".join(f"{name} {chg:+.2f} %" for name, chg in moves.items())
+    report = await ai.ask(
+        f"Une news importante est sortie à {n.published:%H:%M} UTC et fait bouger le marché.\n"
+        f"Titre : {n.title}\nRésumé : {n.summary or '-'}\nSource : {n.source}\n"
+        f"Réaction observée depuis : {react}.\n"
+        f"Niveaux clés et positionnement :\n{summary_for_ai(positions)}\n\n"
+        "Fais-moi le compte rendu : ce qui s'est passé, pourquoi le marché réagit comme ça, l'effet sur "
+        "les taux d'intérêt, si le mouvement risque de continuer ou de revenir, et les niveaux à "
+        "surveiller pour placer un trade (utilise les murs gamma et la bascule gamma).")
+    return fmt.news_report(n, x, moves, report, settings.timezone)
+
+
+async def _check_pending_news(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Envoie le compte rendu des news en attente dès que le marché réagit vraiment."""
+    pending: dict = state.data.setdefault("pending_news", {})
+    if not pending:
+        return
+    now = datetime.now(timezone.utc).timestamp()
+    prices = {k: await asyncio.to_thread(_price, inst) for k, inst in INSTRUMENTS.items()}
+    for nid, p in list(pending.items()):
+        moves, triggered = {}, []
+        for k, inst in INSTRUMENTS.items():
+            p0, p1 = p["prices"].get(k), prices.get(k)
+            if p0 and p1:
+                moves[inst.name] = (p1 / p0 - 1) * 100
+                if abs(moves[inst.name]) >= inst.news_move_pct:
+                    triggered.append(k)
+        if triggered and _news_budget() > 0:
+            del pending[nid]
+            # l'alerte « gros mouvement » a déjà expliqué ce mouvement avec les news : pas de doublon
+            if all(state.cooling_down(f"move:{k}:hausse", 1800) or state.cooling_down(f"move:{k}:baisse", 1800)
+                   for k in triggered):
+                continue
+            state.data["news_sent"] = state.data.get("news_sent", []) + [now]
+            state.save()
+            n, x = _item_from_dict(p["item"]), NewsExplanation(**p["expl"])
+            await broadcast(context, await _report_text(n, x, moves))
+        elif now - p["t"] > settings.news_watch_minutes * 60:
+            del pending[nid]  # le marché n'a pas réagi : on n'en parle pas
+    state.save()
+
+
 async def job_news(context: ContextTypes.DEFAULT_TYPE) -> None:
     items = await asyncio.to_thread(fetch_news, 3)
     first_run = not any(k.startswith("news:") for k in state.data["seen"])
@@ -576,19 +674,26 @@ async def job_news(context: ContextTypes.DEFAULT_TYPE) -> None:
     for n in items:  # tout marquer comme vu pour ne pas renvoyer plus tard
         if not state.seen(f"news:{n.id}"):
             state.mark_seen(f"news:{n.id}")
-    if first_run or not fresh:
-        return  # au premier lancement on ne renvoie pas les news déjà publiées
-    budget = _news_budget()
-    if budget == 0:
-        return
-    keep, explanations = await _high_impact(fresh)
-    to_send = keep[:budget]
-    if not to_send:
-        return
-    now = datetime.now(timezone.utc).timestamp()
-    state.data["news_sent"] = state.data.get("news_sent", []) + [now] * len(to_send)
-    state.save()
-    await broadcast(context, _cards_message("🚨 <b>News à fort impact</b>", to_send, explanations))
+    if not first_run and fresh:  # au premier lancement on ne reprend pas les news déjà publiées
+        keep, explanations = await _high_impact(fresh)
+        if settings.news_only_if_move:
+            # on note le prix au moment de la news, puis on attend de voir si le marché réagit
+            prices = {k: await asyncio.to_thread(_price, inst) for k, inst in INSTRUMENTS.items()}
+            pending = state.data.setdefault("pending_news", {})
+            now = datetime.now(timezone.utc).timestamp()
+            for n in keep:
+                pending[n.id] = {"t": now, "item": _item_to_dict(n), "prices": prices,
+                                 "expl": dataclasses.asdict(explanations[n.id])}
+            state.save()
+        else:
+            to_send = keep[:_news_budget()]
+            if to_send:
+                now = datetime.now(timezone.utc).timestamp()
+                state.data["news_sent"] = state.data.get("news_sent", []) + [now] * len(to_send)
+                state.save()
+                await broadcast(context, _cards_message("🚨 <b>News à fort impact</b>", to_send, explanations))
+    if settings.news_only_if_move:
+        await _check_pending_news(context)
 
 
 async def job_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -641,7 +746,7 @@ def build_app() -> Application:
     for name, fn in [("start", cmd_start), ("aide", cmd_help), ("help", cmd_help),
                      ("menu", cmd_menu),
                      ("marche", cmd_marche), ("signaux", cmd_signaux), ("pourquoi", cmd_pourquoi),
-                     ("news", cmd_news), ("resume", cmd_resume), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
+                     ("news", cmd_news), ("resume", cmd_resume), ("niveaux", cmd_niveaux), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
                      ("stock", cmd_stock), ("watchlist", cmd_watchlist), ("ajouter", cmd_ajouter),
                      ("retirer", cmd_retirer), ("brief", cmd_brief)]:
         app.add_handler(CommandHandler(name, fn))

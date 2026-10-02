@@ -41,6 +41,8 @@ class Instrument:
     # Seuils d'alerte "gros mouvement" (en %)
     move_15m_pct: float
     move_60m_pct: float
+    # Variation minimale après une news pour dire qu'elle « fait bouger le marché » (en %)
+    news_move_pct: float = 0.3
     # Mots-clés pour filtrer les news pertinentes
     keywords: tuple[str, ...] = ()
 
@@ -52,6 +54,7 @@ INSTRUMENTS: dict[str, Instrument] = {
         ticker=_env("NQ_TICKER", "NQ=F"),
         move_15m_pct=_env_float("NQ_MOVE_15M_PCT", 0.6),
         move_60m_pct=_env_float("NQ_MOVE_60M_PCT", 1.1),
+        news_move_pct=_env_float("NQ_NEWS_MOVE_PCT", 0.35),
         keywords=("nasdaq", "tech", "stocks", "equities", "wall street", "s&p", "nvidia",
                   "apple", "microsoft", "amazon", "meta", "alphabet", "google", "tesla",
                   "semiconductor", "chip", "ai "),
@@ -62,6 +65,7 @@ INSTRUMENTS: dict[str, Instrument] = {
         ticker=_env("XAU_TICKER", "GC=F"),
         move_15m_pct=_env_float("XAU_MOVE_15M_PCT", 0.45),
         move_60m_pct=_env_float("XAU_MOVE_60M_PCT", 0.9),
+        news_move_pct=_env_float("XAU_NEWS_MOVE_PCT", 0.3),
         keywords=("gold", "bullion", "precious metal", "safe haven", "safe-haven", "xau",
                   "central bank buying", "dollar", "yields"),
     ),
@@ -98,6 +102,9 @@ class Settings:
     anthropic_api_key: str = _env("ANTHROPIC_API_KEY")
     claude_model: str = _env("CLAUDE_MODEL", "claude-opus-5-5")
     claude_effort: str = _env("CLAUDE_EFFORT", "medium")
+    # Sentiment des particuliers Myfxbook (compte gratuit sur myfxbook.com)
+    myfxbook_email: str = _env("MYFXBOOK_EMAIL")
+    myfxbook_password: str = _env("MYFXBOOK_PASSWORD")
     claude_web_search: bool = _env("CLAUDE_WEB_SEARCH", "1") not in ("0", "false", "no")
 
     timezone: ZoneInfo = field(default_factory=lambda: ZoneInfo(_env("TZ_NAME", "America/Toronto")))
@@ -118,6 +125,10 @@ class Settings:
     news_min_importance: int = _env_int("NEWS_MIN_IMPORTANCE", 4)
     # Nombre maximal de news envoyées automatiquement par heure
     news_max_per_hour: int = _env_int("NEWS_MAX_PER_HOUR", 3)
+    # 1 = une news n'est envoyée que si le Nasdaq ou l'or bouge vraiment après sa sortie
+    news_only_if_move: bool = _env("NEWS_ONLY_IF_MOVE", "1") not in ("0", "false", "no")
+    # Pendant combien de minutes on surveille la réaction du marché après une news
+    news_watch_minutes: int = _env_int("NEWS_WATCH_MINUTES", 90)
     # Heures du résumé des news (heure locale, jours de semaine)
     digest_times: list[str] = field(
         default_factory=lambda: [t.strip() for t in _env("DIGEST_TIMES", "07:30,12:00,16:30").split(",")
