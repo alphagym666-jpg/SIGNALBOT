@@ -58,3 +58,22 @@ def test_pine_with_levels_embeds_line():
     assert code.startswith("//@version=5")
     assert 'input.text_area("NQ|DATE=2026-10-03;25000:Call \'wall\'", ' in code
     assert code.count("input.text_area(") == 1
+
+
+def _pine_market(ticker: str) -> str:
+    """Reproduit la reconnaissance automatique du marché faite par l'indicateur."""
+    tk = ticker.upper()
+    gold = "XAU" in tk or "GOLD" in tk or tk.startswith("GC")
+    nas = (tk.startswith("NQ") or tk.startswith("MNQ") or any(w in tk for w in ("NAS", "US100", "USTEC", "NDX", "US TECH")))
+    return "XAU" if gold else "NQ" if nas else ""
+
+
+def test_market_detection_rules_match_pine():
+    src = (Path(__file__).resolve().parent.parent / "tradingview" / "SignalBot_Niveaux.pine").read_text()
+    assert 'isNas ? "NQ" : ""' in src  # un marché inconnu n'est plus traité comme le Nasdaq
+    for t in ("XAUUSD", "GOLD", "GC1!", "XAUUSD.PRO"):
+        assert _pine_market(t) == "XAU"
+    for t in ("NQ1!", "MNQ1!", "NAS100", "US100", "USTEC", "NDX", "US100.CASH"):
+        assert _pine_market(t) == "NQ"
+    for t in ("EURUSD", "US30", "SPX500", "BTCUSD"):
+        assert _pine_market(t) == ""

@@ -43,7 +43,9 @@ showTable = input.bool(true, "Afficher le tableau", group=grpTab)
 // ------------------------------------------------------------------ marché et conversion
 tk = str.upper(syminfo.ticker)
 isGold = str.contains(tk, "XAU") or str.contains(tk, "GOLD") or str.startswith(tk, "GC")
-mkt = marketIn == "Auto" ? (isGold ? "XAU" : "NQ") : marketIn
+isNas = str.startswith(tk, "NQ") or str.startswith(tk, "MNQ") or str.contains(tk, "NAS") or str.contains(tk, "US100") or str.contains(tk, "USTEC") or str.contains(tk, "NDX") or str.contains(tk, "US TECH")
+// marché non reconnu (EURUSD, US30...) : on n'affiche PAS les niveaux du bot, ils seraient faux
+mkt = marketIn == "Auto" ? (isGold ? "XAU" : isNas ? "NQ" : "") : marketIn
 refSym = mkt == "XAU" ? refXAU : refNQ
 refClose = request.security(refSym, timeframe.period, close, ignore_invalid_symbol=true)
 ratio = convert and not na(refClose) and refClose > 0 ? close / refClose : 1.0
@@ -202,8 +204,8 @@ if barstate.isrealtime and barstate.isconfirmed and array.size(lvPrices) > 0
 // ------------------------------------------------------------------ tableau
 var table tb = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 25), border_width=1)
 if showTable and barstate.islast
-    table.cell(tb, 0, 0, "SignalBot " + mkt, text_color=color.white, text_size=size.small)
-    table.cell(tb, 1, 0, dateTxt == "" ? "colle la ligne /tv" : "niveaux du " + dateTxt, text_color=color.silver, text_size=size.small)
+    table.cell(tb, 0, 0, "SignalBot " + (mkt == "" ? "?" : mkt), text_color=color.white, text_size=size.small)
+    table.cell(tb, 1, 0, mkt == "" ? "marché non reconnu : choisis-le dans « Marché »" : dateTxt == "" ? "tape /chart dans Telegram" : "niveaux du " + dateTxt, text_color=mkt == "" ? color.orange : color.silver, text_size=size.small)
     table.cell(tb, 0, 1, "Ce graphique", text_color=color.silver, text_size=size.small)
     table.cell(tb, 1, 1, rCur, text_color=regimeColor(rCur), text_size=size.small)
     table.cell(tb, 0, 2, "Tendance de fond", text_color=color.silver, text_size=size.small)
