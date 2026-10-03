@@ -51,3 +51,10 @@ def test_pine_file_basics():
     for word in ("parseSection", "BIAS=", "GAMMA=", "DATE=", "CME_MINI:NQ1!", "COMEX:GC1!", "alert("):
         assert word in src
     assert "\t" not in src  # Pine refuse les tabulations
+
+
+def test_pine_with_levels_embeds_line():
+    code = tv.pine_with_levels('NQ|DATE=2026-10-03;25000:Call "wall"')
+    assert code.startswith("//@version=5")
+    assert 'input.text_area("NQ|DATE=2026-10-03;25000:Call \'wall\'", ' in code
+    assert code.count("input.text_area(") == 1

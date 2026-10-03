@@ -12,8 +12,12 @@ graphique.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from .levels import Level
+
+PINE_FILE = Path(__file__).resolve().parent.parent / "tradingview" / "SignalBot_Niveaux.pine"
+PINE_INPUT = 'levelsTxt = input.text_area("", '
 
 # niveaux que l'indicateur calcule déjà lui-même en direct : inutile de les envoyer
 LIVE_IN_PINE = ("VWAP", "Haut d'hier", "Bas d'hier", "Clôture d'hier", "Haut de la nuit",
@@ -55,3 +59,12 @@ def section(key: str, levels: list[Level], plan_levels: list[dict], bias: str | 
 
 def build_line(sections: list[str]) -> str:
     return "||".join(sections)
+
+
+def pine_with_levels(line: str, source: str | None = None) -> str:
+    """Code complet de l'indicateur, avec la ligne du jour déjà mise comme valeur par défaut."""
+    src = source if source is not None else PINE_FILE.read_text(encoding="utf-8")
+    if PINE_INPUT not in src:
+        raise ValueError("Indicateur TradingView introuvable ou modifié")
+    literal = line.replace("\\", "/").replace('"', "'")
+    return src.replace(PINE_INPUT, f'levelsTxt = input.text_area("{literal}", ', 1)

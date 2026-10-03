@@ -63,7 +63,7 @@ def test_menu_buttons_are_all_handled():
     assert len(labels) == 14 and bot.BTN_TV in labels and bot.BTN_ANALYSE == labels[0] and bot.BTN_NIVEAUX in labels
     assert all(any(ch for ch in label if ord(ch) > 0x2000) for label in labels)  # icône
     names = {c.command for c in bot.BOT_COMMANDS}
-    assert {"menu", "analyse", "sg", "tv", "marche", "news", "resume", "niveaux", "stocks"} <= names
+    assert {"menu", "analyse", "sg", "chart", "marche", "news", "resume", "niveaux", "stocks"} <= names
 
 
 def test_card_shows_reaction_and_rates(monkeypatch):

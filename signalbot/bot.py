@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import io
 import functools
 import logging
 from datetime import datetime, time, timedelta, timezone
@@ -26,7 +27,7 @@ from .regime import Regime, classify
 from .signals import Signal, evaluate
 from .state import State
 from .stocks import analyze, scan
-from .tradingview import build_line, section as tv_section
+from .tradingview import build_line, pine_with_levels, section as tv_section
 
 log = logging.getLogger(__name__)
 state = State(settings.state_file)
@@ -44,7 +45,7 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 /pourquoi nq | or — pourquoi le prix bouge en ce moment
 /niveaux — niveaux clés : gamma, VWAP, haut/bas d'hier et de la nuit, profil de volume, COT
 /sg nq call 25000 put 24000 flip 24500 — taper tes niveaux SpotGamma du jour
-/tv — ligne à coller dans l'indicateur TradingView « SignalBot Niveaux »
+/chart — 📺 code TradingView du jour, niveaux déjà dedans, à copier-coller
 /brief — plan de match du jour
 
 <b>News</b>
@@ -117,7 +118,7 @@ BOT_COMMANDS = [
     BotCommand("news", "🔥 News à fort impact expliquées"),
     BotCommand("niveaux", "🎯 Niveaux clés : gamma, VWAP, profil de volume…"),
     BotCommand("sg", "✍️ Taper les niveaux SpotGamma (ex. /sg nq call 25000)"),
-    BotCommand("tv", "📺 Ligne de niveaux pour l'indicateur TradingView"),
+    BotCommand("chart", "📺 Code TradingView du jour à copier-coller"),
     BotCommand("calendrier", "🗓️ Annonces économiques"),
     BotCommand("pourquoi", "❓ Pourquoi ça bouge (nq / or)"),
     BotCommand("brief", "☀️ Plan de match du jour"),
@@ -415,21 +416,29 @@ def _tv_line() -> str:
     return build_line(sections)
 
 
-TV_HELP = ("📺 <b>Ligne pour TradingView</b>\n"
-           "1. Appuie longtemps sur la ligne ci-dessous pour la copier.\n"
-           "2. Dans TradingView, ouvre les paramètres de l'indicateur <b>SignalBot Niveaux</b> "
-           "(roue dentée) et colle-la dans « Ligne copiée depuis /tv ».\n"
-           "3. La même ligne marche sur ton graphique Nasdaq ET sur ton graphique or : "
-           "l'indicateur choisit le bon marché et convertit les prix tout seul.\n")
+CHART_HELP = ("📺 <b>Ton code TradingView du jour</b> (niveaux déjà dedans)\n\n"
+              "<b>Option 1 — le code complet</b> (le fichier ci-dessous) :\n"
+              "ouvre-le → Ctrl+A → Ctrl+C → TradingView → Pine Editor → efface tout → colle → "
+              "<b>Enregistrer</b> → <b>Ajouter au graphique</b>.\n"
+              "S'il est déjà sur ton graphique : retire-le puis rajoute-le pour charger les niveaux du jour.\n\n"
+              "<b>Option 2 — plus rapide une fois l'indicateur installé</b> :\n"
+              "copie seulement la ligne ci-dessous → roue dentée de l'indicateur → colle dans "
+              "« Ligne copiée depuis /tv ».\n\n"
+              "Le même code marche sur ton graphique Nasdaq ET sur ton graphique or.")
 
 
 @restricted
-async def cmd_tv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.effective_chat.send_message("📺 Je prépare tes niveaux pour TradingView…")
+async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_chat.send_message("📺 Je prépare ton code TradingView…")
     line = await asyncio.to_thread(_tv_line)
     note = ("" if (state.data.get("last_analysis") or {}).get("ts") else
-            "\n💡 Lance d'abord 🧠 Analyse IA pour ajouter ses zones d'achat / de vente sur le graphique.")
-    await reply(update, TV_HELP + note)
+            "\n\n💡 Lance d'abord 🧠 Analyse IA pour ajouter ses zones d'achat / de vente sur le graphique.")
+    await reply(update, CHART_HELP + note)
+    code = pine_with_levels(line)
+    day = datetime.now(settings.timezone).strftime("%Y-%m-%d")
+    await update.get_bot().send_document(
+        update.effective_chat.id, document=io.BytesIO(code.encode("utf-8")),
+        filename=f"SignalBot_Niveaux_{day}.txt", caption="📄 Code complet pour TradingView (Pine Editor)")
     await reply(update, f"<code>{fmt.e(line)}</code>")
 
 
@@ -627,7 +636,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.message.text or "").strip()
     actions = {
         BTN_MARCHE: cmd_marche, BTN_SIGNAUX: cmd_signaux, BTN_NEWS: cmd_news, BTN_RESUME: cmd_resume,
-        BTN_NIVEAUX: cmd_niveaux, BTN_ANALYSE: cmd_analyse, BTN_TV: cmd_tv,
+        BTN_NIVEAUX: cmd_niveaux, BTN_ANALYSE: cmd_analyse, BTN_TV: cmd_chart,
         BTN_CALENDRIER: cmd_calendrier, BTN_BRIEF: cmd_brief, BTN_STOCKS: cmd_stocks,
         BTN_AIDE: cmd_help,
     }
@@ -668,7 +677,7 @@ async def _brief_text() -> str:
     lines += [fmt.event_line(ev, tz) for ev in today] or ["• Aucune annonce US majeure."]
     lines += ["", await _analysis_text()]
     line = await asyncio.to_thread(_tv_line)
-    lines += ["", "📺 <b>Ligne TradingView du jour</b> (à coller dans l'indicateur SignalBot Niveaux)",
+    lines += ["", "📺 <b>Ligne TradingView du jour</b> (ou tape /chart pour le code complet)",
               f"<code>{fmt.e(line)}</code>"]
     return "\n".join(lines)
 
@@ -906,7 +915,7 @@ def build_app() -> Application:
                      ("menu", cmd_menu),
                      ("marche", cmd_marche), ("signaux", cmd_signaux), ("pourquoi", cmd_pourquoi),
                      ("news", cmd_news), ("resume", cmd_resume), ("niveaux", cmd_niveaux),
-                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("tv", cmd_tv), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
+                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
                      ("stock", cmd_stock), ("watchlist", cmd_watchlist), ("ajouter", cmd_ajouter),
                      ("retirer", cmd_retirer), ("brief", cmd_brief)]:
         app.add_handler(CommandHandler(name, fn))

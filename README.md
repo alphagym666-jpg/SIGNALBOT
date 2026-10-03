@@ -47,7 +47,7 @@ Après `/start`, un **menu à boutons avec icônes** reste affiché en bas de Te
 | `/brief` | Plan de match du jour |
 | `/analyse` | 🧠 Analyse IA complète : ce qui se trame, scénarios, zones, invalidation |
 | `/sg nq call 25000 put 24000 flip 24500` | Taper tes niveaux SpotGamma du jour (en prix NQ/or ou QQQ/GLD) |
-| `/tv` | Ligne de niveaux à coller dans l'indicateur TradingView |
+| `/chart` | 📺 Code TradingView du jour (fichier, niveaux déjà dedans) + ligne rapide à coller |
 | `/niveaux` | Niveaux clés : gamma des options, particuliers, COT |
 | `/resume` | Résumé : le marché penche vers où, et les taux ? |
 | `/news` | Seulement les news à fort impact, expliquées |
@@ -108,8 +108,10 @@ Le fichier [`tradingview/SignalBot_Niveaux.pine`](tradingview/SignalBot_Niveaux.
 2. Dans TradingView : en bas, onglet **Pine Editor** → supprime le contenu → colle → **Enregistrer** → **Ajouter au graphique**.
 3. Fais la même chose sur ton graphique de l'or (ou ajoute l'indicateur depuis « Mes scripts »).
 
-**Chaque matin (10 secondes)**
-1. Dans Telegram : bouton **📺 TradingView** (ou `/tv`). La ligne est aussi à la fin du brief du matin.
+**Le plus simple : tape `/chart`** dans Telegram (ou bouton **📺 TradingView**). Le bot t'envoie le **code complet avec les niveaux du jour déjà dedans** (fichier à copier-coller dans le Pine Editor) et la ligne courte.
+
+**Chaque matin, une fois l'indicateur installé (10 secondes)**
+1. `/chart` (la ligne est aussi à la fin du brief du matin).
 2. Copie la ligne → roue dentée de l'indicateur → colle dans « Ligne copiée depuis /tv ».
 La même ligne sert pour le Nasdaq et pour l'or : l'indicateur reconnaît le marché et convertit les prix des contrats à terme (NQ1!, GC1!) au prix de ton graphique (NAS100, US100, XAUUSD...).
 
