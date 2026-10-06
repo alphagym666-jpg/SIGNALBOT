@@ -84,6 +84,7 @@ def test_analysis_without_ai_is_honest(monkeypatch):
 def test_level_alert_once_per_level(monkeypatch, tmp_path):
     monkeypatch.setattr(bot, "state", State(tmp_path / "s.json"))
     monkeypatch.setattr(bot.settings, "allowed_chat_ids", [1])
+    monkeypatch.setattr(bot.settings, "level_alerts", True)
     monkeypatch.setattr(bot.data, "is_fresh", lambda t: True)
     monkeypatch.setattr(bot.data, "last_change", lambda t, m: (20_000.0, -0.1))  # il y a 15 min : 20 020
     lv = [levels.Level("Put wall (options)", 19_990.0, "support"), levels.Level("Haut d'hier", 20_300.0, "r")]

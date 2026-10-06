@@ -288,3 +288,79 @@ async def digest(items: list[NewsItem]) -> Digest | None:
         confidence=data["confidence"], summary=data["summary"], themes=data["themes"][:4],
         watch=data["watch"][:3], key_ids=[i for i in data["key_ids"] if i in ids][:3],
         count=len(items))
+
+
+# ------------------------------------------------------------------ filtre IA : « ce que j'en pense »
+
+@dataclass
+class MarketTake:
+    important: bool
+    headline: str
+    take: str  # l'avis de l'IA, dans ses mots
+    rates: str  # baisse / hausse / aucun effet / incertain
+    rates_why: str
+    nasdaq: str
+    gold: str
+    key_ids: list[str]
+
+
+TAKE_SYSTEM = """Tu es le filtre de nouvelles personnel d'un trader francophone (Québec) qui trade \
+UNIQUEMENT le Nasdaq 100 et l'or (XAUUSD). Il ne veut PAS lire toutes les news : tu les lis pour \
+lui et tu le déranges seulement quand ça compte vraiment.
+
+important = true SEULEMENT si au moins une news peut vraiment faire bouger le Nasdaq ou l'or \
+aujourd'hui ou changer la tendance, par exemple :
+- ce qui change les attentes sur les TAUX D'INTÉRÊT : surprise sur l'inflation (CPI, PCE, PPI), \
+l'emploi (NFP, chômage), le PIB, décision ou discours de la Fed qui change le ton, mouvement \
+brusque des taux obligataires ou du dollar ;
+- escalade ou désescalade géopolitique majeure, choc pétrolier, tarifs douaniers importants ;
+- résultats ou nouvelle majeure d'un géant tech qui pèse sur le Nasdaq (Nvidia, Apple, Microsoft...) ;
+- nouvelle majeure sur l'or (achats massifs des banques centrales, record, crise).
+La grande majorité du temps, la réponse est important = false. Les commentaires d'analystes, les \
+petites nouvelles d'entreprises, les rappels de choses déjà connues : false.
+Ne répète pas une histoire déjà envoyée aujourd'hui (liste fournie), sauf s'il y a un nouveau \
+développement important.
+
+Si important :
+- headline : une phrase courte qui résume.
+- take : 3 à 5 phrases, dans TES mots, comme un ami trader qui explique : ce qui se passe, ce que \
+ça change pour les taux d'intérêt, ce que tu en penses pour le Nasdaq et pour l'or, et quoi \
+surveiller. Concret et honnête (dis-le si l'effet est incertain). Pas de conseil financier.
+- rates (+ rates_why en 1 phrase), nasdaq, gold : l'effet probable.
+- key_ids : les id des 1 à 3 news à l'origine.
+Si pas important : remplis les champs texte avec des chaînes vides et key_ids vide."""
+
+TAKE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "important": {"type": "boolean"},
+        "headline": {"type": "string"},
+        "take": {"type": "string"},
+        "rates": {"type": "string", "enum": list(RATES)},
+        "rates_why": {"type": "string"},
+        "nasdaq": {"type": "string", "enum": list(DIRECTIONS)},
+        "gold": {"type": "string", "enum": list(DIRECTIONS)},
+        "key_ids": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["important", "headline", "take", "rates", "rates_why", "nasdaq", "gold", "key_ids"],
+    "additionalProperties": False,
+}
+
+
+async def market_take(items: list[NewsItem], already_sent: list[str]) -> MarketTake | None:
+    """Claude lit les nouvelles news et dit s'il y a quelque chose d'important (None sans IA)."""
+    if not items or not ai.enabled():
+        return None
+    listing = "\n\n".join(
+        f"id: {n.id}\nheure: {n.published:%H:%M} UTC\nsource: {n.source}\ntitre: {n.title}\n"
+        f"résumé: {n.summary or '-'}" for n in items)
+    sent = "\n".join(f"- {h}" for h in already_sent) or "- rien encore"
+    data = await ai.ask_json(
+        f"Déjà envoyé aujourd'hui :\n{sent}\n\nNouvelles news ({len(items)}) :\n\n{listing}",
+        TAKE_SCHEMA, system=TAKE_SYSTEM, effort="low")
+    if not data:
+        return None
+    ids = {n.id for n in items}
+    return MarketTake(bool(data["important"]), data["headline"], data["take"], data["rates"],
+                      data["rates_why"], data["nasdaq"], data["gold"],
+                      [i for i in data["key_ids"] if i in ids][:3])

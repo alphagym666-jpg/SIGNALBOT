@@ -21,7 +21,7 @@ from .analysis import MarketInput, analyze as ai_analyze
 from .levels import Level, manual_levels, parse_manual, pro_levels
 from .moves import cross_market_context, current_move, detect_move, explain
 from .news import NewsItem, events_between, fetch_calendar, fetch_news, relevant_news
-from .news_explain import NewsExplanation, digest as news_digest, explain as explain_news
+from .news_explain import NewsExplanation, digest as news_digest, explain as explain_news, market_take
 from .positioning import SOURCES, myfxbook_enabled, positioning, summary_for_ai
 from .regime import Regime, classify
 from .signals import Signal, evaluate
@@ -58,13 +58,13 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 /stock AAPL — analyse d'une action
 /watchlist — liste suivie · /ajouter TICKER · /retirer TICKER
 
-<b>Automatique</b>
-🚨 Alerte + explication dès qu'un gros mouvement arrive
-🎯 Signaux de qualité (score ≥ {min_score}/100)
-📣 Compte rendu d'une news seulement quand elle fait bouger le marché
-🧭 Résumé des news ({digest}) · 📍 Alerte quand le prix approche d'un niveau clé
-⏰ Rappel {reminder} min avant les annonces
-☀️ Brief chaque matin ({brief}) · 📈 Rapport actions ({stocks})"""
+<b>Automatique (mode calme)</b>
+☀️ Brief chaque matin ({brief}) : l'analyse IA complète
+🧠 « Ce que j'en pense » : l'IA lit toutes les news et t'écrit SEULEMENT quand c'est vraiment
+important (taux, Fed, inflation, géopolitique…) — max {news_per_day} par jour
+🚨 Alerte + explication dès qu'un gros mouvement arrive (même la nuit)
+🎯 Signaux de qualité (score ≥ {min_score}/100) · ⏰ Rappel {reminder} min avant les annonces
+🌙 Silence de {quiet} (sauf gros mouvements) · 📈 Rapport actions {stocks}"""
 
 
 # Menu à boutons (clavier toujours visible en bas de Telegram)
@@ -176,7 +176,22 @@ async def reply(update: Update, text: str, reply_markup=None) -> None:
     await send(update.get_bot(), update.effective_chat.id, text, reply_markup)
 
 
-async def broadcast(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+def in_quiet_hours(now: datetime | None = None) -> bool:
+    """Vrai pendant les heures de silence (ex. « 22:00-07:00 », peut passer minuit)."""
+    try:
+        start, end = (_parse_time(x.strip()) for x in settings.quiet_hours.split("-"))
+    except ValueError:
+        return False
+    t = (now or datetime.now(settings.timezone)).astimezone(settings.timezone).time().replace(tzinfo=None)
+    start, end = start.replace(tzinfo=None), end.replace(tzinfo=None)
+    return start <= t < end if start < end else (t >= start or t < end)
+
+
+async def broadcast(context: ContextTypes.DEFAULT_TYPE, text: str, urgent: bool = False) -> None:
+    """Envoie à tous les abonnés. Pendant les heures de silence, seuls les messages urgents passent."""
+    if not urgent and in_quiet_hours():
+        log.info("Heures de silence : message non urgent non envoyé")
+        return
     for chat_id in settings.allowed_chat_ids or state.chats:
         try:
             await send(context.bot, chat_id, text)
@@ -228,8 +243,10 @@ def _help_text() -> str:
     return HELP.format(min_score=settings.min_signal_score,
                        reminder=settings.calendar_reminder_minutes,
                        brief=settings.morning_brief_time,
-                       stocks=settings.stocks_report_time,
-                       digest=", ".join(settings.digest_times))
+                       news_per_day=settings.news_max_per_day,
+                       quiet=settings.quiet_hours.replace("-", " à "),
+                       stocks=("le dimanche" if settings.stocks_report_weekly else "chaque soir")
+                       + f" à {settings.stocks_report_time}")
 
 
 @restricted
@@ -700,8 +717,8 @@ async def job_moves(context: ContextTypes.DEFAULT_TYPE) -> None:
             continue
         state.touch(key)
         log.info("Gros mouvement %s %+.2f%% (%s)", inst.key, move.change, move.window)
-        await broadcast(context, await explain(move))
-    if settings.news_only_if_move:  # réaction aux news vérifiée aussi souvent que les gros mouvements
+        await broadcast(context, await explain(move), urgent=True)
+    if _news_mode() == "mouvement":  # réaction aux news vérifiée aussi souvent que les gros mouvements
         await _check_pending_news(context)
 
 
@@ -750,7 +767,7 @@ async def job_signals(context: ContextTypes.DEFAULT_TYPE) -> None:
             previous = regimes_state.get(inst.key)
             regimes_state[inst.key] = h4.code
             state.save()
-            if previous and previous != h4.code:
+            if settings.regime_alerts and previous and previous != h4.code:
                 await broadcast(context, "🔄 <b>Changement de régime</b>\n\n"
                                 + fmt.regime_block(inst, regimes))
 
@@ -835,16 +852,48 @@ async def _check_pending_news(context: ContextTypes.DEFAULT_TYPE) -> None:
     state.save()
 
 
+def _news_mode() -> str:
+    mode = settings.news_mode if settings.news_mode in ("ia", "mouvement", "impact", "aucune") else "ia"
+    return "mouvement" if mode == "ia" and not ai.enabled() else mode  # sans clé Claude : pas de filtre IA
+
+
+def _takes_today() -> list[dict]:
+    today = datetime.now(settings.timezone).strftime("%Y-%m-%d")
+    takes = [t for t in state.data.get("takes", []) if t.get("day") == today]
+    state.data["takes"] = takes
+    return takes
+
+
+async def _send_market_take(context: ContextTypes.DEFAULT_TYPE, fresh: list[NewsItem]) -> None:
+    """Mode ia : Claude lit les nouvelles news et écrit seulement si c'est vraiment important."""
+    takes = _takes_today()
+    if len(takes) >= settings.news_max_per_day or in_quiet_hours():
+        return  # la nuit, le brief du matin fera le point
+    candidates = relevant_news(fresh, None, min_score=max(3, settings.min_news_score - 2))[:15]
+    take = await market_take(candidates, [t["headline"] for t in takes])
+    if not take or not take.important:
+        return
+    by_id = {n.id: n for n in candidates}
+    takes.append({"day": datetime.now(settings.timezone).strftime("%Y-%m-%d"), "headline": take.headline})
+    state.data["takes"] = takes
+    state.save()
+    await broadcast(context, fmt.market_take_message(take, [by_id[k] for k in take.key_ids if k in by_id]))
+
+
 async def job_news(context: ContextTypes.DEFAULT_TYPE) -> None:
+    mode = _news_mode()
     items = await asyncio.to_thread(fetch_news, 3)
     first_run = not any(k.startswith("news:") for k in state.data["seen"])
     fresh = [n for n in items if not state.seen(f"news:{n.id}")]
     for n in items:  # tout marquer comme vu pour ne pas renvoyer plus tard
         if not state.seen(f"news:{n.id}"):
             state.mark_seen(f"news:{n.id}")
-    if not first_run and fresh:  # au premier lancement on ne reprend pas les news déjà publiées
+    if not first_run and fresh and mode != "aucune":  # au 1er lancement : pas les news déjà publiées
+        if mode == "ia":
+            await _send_market_take(context, fresh)
+            return
         keep, explanations = await _high_impact(fresh)
-        if settings.news_only_if_move:
+        if mode == "mouvement":
             # on note le prix au moment de la news, puis on attend de voir si le marché réagit
             prices = {k: await asyncio.to_thread(_price, inst) for k, inst in INSTRUMENTS.items()}
             pending = state.data.setdefault("pending_news", {})
@@ -860,7 +909,7 @@ async def job_news(context: ContextTypes.DEFAULT_TYPE) -> None:
                 state.data["news_sent"] = state.data.get("news_sent", []) + [now] * len(to_send)
                 state.save()
                 await broadcast(context, _cards_message("🚨 <b>News à fort impact</b>", to_send, explanations))
-    if settings.news_only_if_move:
+    if mode == "mouvement":
         await _check_pending_news(context)
 
 
@@ -931,10 +980,11 @@ def build_app() -> Application:
     jq.run_daily(job_brief, time=_parse_time(settings.morning_brief_time), days=WEEKDAYS)
     for t in settings.digest_times:
         jq.run_daily(job_digest, time=_parse_time(t), days=WEEKDAYS)
-    jq.run_daily(job_stocks, time=_parse_time(settings.stocks_report_time), days=WEEKDAYS)
+    jq.run_daily(job_stocks, time=_parse_time(settings.stocks_report_time),
+                 days=(0,) if settings.stocks_report_weekly else WEEKDAYS)  # 0 = dimanche
 
     if ai.enabled():
-        log.info("Explications IA activées (%s)", settings.claude_model)
+        log.info("Explications IA activées (%s), news en mode « %s »", settings.claude_model, _news_mode())
     else:
         log.info("ANTHROPIC_API_KEY absent : explications basées sur des règles")
     return app

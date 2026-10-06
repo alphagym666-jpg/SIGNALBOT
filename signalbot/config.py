@@ -100,7 +100,7 @@ class Settings:
     )
 
     anthropic_api_key: str = _env("ANTHROPIC_API_KEY")
-    claude_model: str = _env("CLAUDE_MODEL", "claude-opus-5-5")
+    claude_model: str = _env("CLAUDE_MODEL", "claude-sonnet-5-5")
     claude_effort: str = _env("CLAUDE_EFFORT", "medium")
     # Sentiment des particuliers Myfxbook (compte gratuit sur myfxbook.com)
     myfxbook_email: str = _env("MYFXBOOK_EMAIL")
@@ -125,24 +125,36 @@ class Settings:
     news_min_importance: int = _env_int("NEWS_MIN_IMPORTANCE", 4)
     # Nombre maximal de news envoyées automatiquement par heure
     news_max_per_hour: int = _env_int("NEWS_MAX_PER_HOUR", 3)
-    # 1 = une news n'est envoyée que si le Nasdaq ou l'or bouge vraiment après sa sortie
-    news_only_if_move: bool = _env("NEWS_ONLY_IF_MOVE", "1") not in ("0", "false", "no")
+    # Comment les news sont envoyées automatiquement :
+    #   « ia »        : Claude lit tout et écrit SEULEMENT quand c'est vraiment important (taux, Fed,
+    #                   inflation, géopolitique majeure...), dans ses mots (défaut)
+    #   « mouvement » : compte rendu d'une news seulement si le Nasdaq ou l'or bouge après sa sortie
+    #   « impact »    : chaque news à fort impact (le plus bavard)
+    #   « aucune »    : rien d'automatique (les news restent dans /resume et /news)
+    news_mode: str = _env("NEWS_MODE", "ia").lower()
+    # Nombre maximal de messages « Ce que j'en pense » par jour (mode ia)
+    news_max_per_day: int = _env_int("NEWS_MAX_PER_DAY", 4)
     # Pendant combien de minutes on surveille la réaction du marché après une news
     news_watch_minutes: int = _env_int("NEWS_WATCH_MINUTES", 90)
     # Heures du résumé des news (heure locale, jours de semaine)
     digest_times: list[str] = field(
-        default_factory=lambda: [t.strip() for t in _env("DIGEST_TIMES", "07:30,12:00,16:30").split(",")
-                                 if t.strip()])
+        default_factory=lambda: [t.strip() for t in _env("DIGEST_TIMES", "").split(",") if t.strip()])
     # Alertes quand le prix approche d'un niveau clé (gamma, SpotGamma, haut/bas d'hier, POC...)
-    level_alerts: bool = _env("LEVEL_ALERTS", "1") not in ("0", "false", "no")
+    level_alerts: bool = _env("LEVEL_ALERTS", "0") not in ("0", "false", "no")
     level_alert_pct: float = _env_float("LEVEL_ALERT_PCT", 0.1)  # distance en % du prix
     level_alerts_per_hour: int = _env_int("LEVEL_ALERTS_PER_HOUR", 4)
+    # Message quand le type de marché H4 change (range -> tendance...)
+    regime_alerts: bool = _env("REGIME_ALERTS", "0") not in ("0", "false", "no")
+    # Heures de silence (heure locale) : seuls les gros mouvements passent
+    quiet_hours: str = _env("QUIET_HOURS", "22:00-07:00")
     # Rappel avant une annonce économique importante (minutes)
     calendar_reminder_minutes: int = _env_int("CALENDAR_REMINDER_MINUTES", 30)
 
     # Heures des rapports quotidiens (heure locale, HH:MM)
     morning_brief_time: str = _env("MORNING_BRIEF_TIME", "08:45")
     stocks_report_time: str = _env("STOCKS_REPORT_TIME", "17:15")
+    # 1 = rapport actions une fois par semaine (dimanche), 0 = chaque jour de semaine
+    stocks_report_weekly: bool = _env("STOCKS_REPORT_WEEKLY", "1") not in ("0", "false", "no")
 
     # Scanner d'actions
     stocks: list[str] = field(default_factory=lambda: _env_list("STOCK_WATCHLIST", DEFAULT_STOCKS))

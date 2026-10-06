@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from .config import INSTRUMENTS, Instrument
 from .news import EconEvent, NewsItem
-from .news_explain import Digest, NewsExplanation
+from .news_explain import Digest, MarketTake, NewsExplanation
 from .positioning import Positioning
 from .analysis import Analysis, MarketInput
 from .levels import Level
@@ -342,4 +342,14 @@ def level_alert(inst: Instrument, lv: Level, price: float, from_below: bool, abo
         lines.append(f"🔺 Niveau suivant au-dessus : {above.price:,.2f} ({e(above.label)})")
     if below:
         lines.append(f"🔻 Niveau suivant en dessous : {below.price:,.2f} ({e(below.label)})")
+    return "\n".join(lines)
+
+
+def market_take_message(t: MarketTake, sources: list[NewsItem]) -> str:
+    """Message court « ce que j'en pense » du filtre IA."""
+    lines = [f"🧠 <b>{e(t.headline)}</b>", "", e(t.take), "",
+             f"🏦 Taux : {_RATES_ICON.get(t.rates, t.rates)}" + (f" — {e(t.rates_why)}" if t.rates_why else ""),
+             f"📊 Nasdaq : {_DIR_ICON.get(t.nasdaq, t.nasdaq)}   🥇 Or : {_DIR_ICON.get(t.gold, t.gold)}"]
+    if sources:
+        lines.append("🔗 " + " · ".join(f"<a href=\"{attr(n.link)}\">{e(n.source)}</a>" for n in sources))
     return "\n".join(lines)

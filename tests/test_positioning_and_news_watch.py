@@ -53,7 +53,8 @@ def _news(uid="n1"):
 
 def test_news_sent_only_when_market_moves(monkeypatch, tmp_path):
     monkeypatch.setattr(ai.settings, "anthropic_api_key", "")
-    monkeypatch.setattr(bot.settings, "news_only_if_move", True)
+    monkeypatch.setattr(bot.settings, "news_mode", "mouvement")
+    monkeypatch.setattr(bot, "in_quiet_hours", lambda now=None: False)
     monkeypatch.setattr(bot.settings, "allowed_chat_ids", [1])
     monkeypatch.setattr(bot, "state", State(tmp_path / "s.json"))
     monkeypatch.setattr(bot, "_positioning_all", lambda: [])

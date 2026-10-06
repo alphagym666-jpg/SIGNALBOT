@@ -1,5 +1,7 @@
 # SignalBot 📈 — Nasdaq, Or & Actions sur Telegram
 
+> **Mode calme (par défaut)** : le brief du matin, puis l'IA (Claude Sonnet) lit toutes les news pour toi et t'écrit **seulement quand c'est vraiment important** (taux, Fed, inflation, géopolitique…), dans ses mots, max 4 fois par jour. Les gros mouvements passent toujours ; le reste se tait la nuit (22 h – 7 h). Tout le reste est disponible sur demande avec les boutons.
+
 Bot Telegram qui t'aide à **comprendre le marché** avant de trader :
 
 | Fonction | Ce que ça fait |
