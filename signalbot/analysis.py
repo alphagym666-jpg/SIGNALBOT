@@ -168,7 +168,7 @@ def fallback(inputs: list[MarketInput]) -> Analysis:
         plans.append(MarketPlan(m.key, bias, "faible",
                                 market_view(m.regimes) if m.regimes else "Données indisponibles."))
     return Analysis("Analyse simplifiée (sans clé Claude) : seulement le type de marché. Ajoute "
-                    "ANTHROPIC_API_KEY dans .env pour l'analyse complète des news, niveaux et "
+                    "ta clé avec /cle dans Telegram pour l'analyse complète des news, niveaux et "
                     "positionnement.", [], plans, ai=False)
 
 

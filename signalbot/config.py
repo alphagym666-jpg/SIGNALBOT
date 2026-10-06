@@ -9,7 +9,26 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
-load_dotenv()
+ENV_FILE = Path(".env")
+OLD_DEFAULT_MODEL = "claude-opus-5-5"  # écrit dans les anciens .env ; le bot utilise maintenant Sonnet
+load_dotenv(ENV_FILE)
+
+
+def save_env(name: str, value: str, path: Path | None = None) -> None:
+    """Écrit (ou remplace) une ligne NOM=valeur dans le fichier .env."""
+    path = path or ENV_FILE
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    out, done = [], False
+    for line in lines:
+        if line.split("=", 1)[0].strip() == name and not line.lstrip().startswith("#"):
+            if not done:
+                out.append(f"{name}={value}")
+                done = True
+            continue
+        out.append(line)
+    if not done:
+        out.append(f"{name}={value}")
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
 def _env(name: str, default: str = "") -> str:
@@ -100,7 +119,8 @@ class Settings:
     )
 
     anthropic_api_key: str = _env("ANTHROPIC_API_KEY")
-    claude_model: str = _env("CLAUDE_MODEL", "claude-sonnet-5-5")
+    claude_model: str = field(default_factory=lambda: (
+        "claude-sonnet-5-5" if _env("CLAUDE_MODEL") in ("", OLD_DEFAULT_MODEL) else _env("CLAUDE_MODEL")))
     claude_effort: str = _env("CLAUDE_EFFORT", "medium")
     # Sentiment des particuliers Myfxbook (compte gratuit sur myfxbook.com)
     myfxbook_email: str = _env("MYFXBOOK_EMAIL")

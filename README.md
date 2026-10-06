@@ -63,6 +63,13 @@ Après `/start`, un **menu à boutons avec icônes** reste affiché en bas de Te
 
 ---
 
+## Le plus simple
+
+1. Double-clique sur **`Lancer SignalBot.bat`** : il se **met à jour tout seul** à chaque lancement (sans toucher à ton `.env`), installe ce qu'il faut et démarre le bot.
+2. Dans Telegram : **`/etat`** te dit ce qui manque. Enregistre tes clés sans ouvrir de fichier :
+   - `/cle sk-ant-...` → clé Claude (le bot la teste et efface ton message) ;
+   - `/myfxbook ton@courriel motdepasse` → sentiment des traders (optionnel).
+
 ## Installation (10 minutes)
 
 ### 1. Créer ton bot Telegram

@@ -1,12 +1,26 @@
 @echo off
 chcp 65001 >nul
 title SignalBot
-cd /d "%~dp0"
+rem On se relance depuis une copie temporaire : la mise a jour peut alors remplacer ce fichier.
+if /i "%~1"=="--depuis-temp" goto start
+copy /y "%~f0" "%TEMP%\signalbot_lanceur.bat" >nul
+"%TEMP%\signalbot_lanceur.bat" --depuis-temp "%~dp0."
+exit /b
+:start
+cd /d "%~2"
 
 echo.
 echo  ==========================================
 echo     SignalBot - Nasdaq, Or et Actions
 echo  ==========================================
+echo.
+
+rem ---- 0. Mise a jour automatique (garde .env, data et .venv)
+if exist "pas_de_mise_a_jour.txt" goto maj_ok
+if not exist "outils\mise_a_jour.ps1" goto maj_ok
+echo  [..] Recherche d'une mise a jour...
+powershell -NoProfile -ExecutionPolicy Bypass -File "outils\mise_a_jour.ps1" -Dest "%CD%"
+:maj_ok
 echo.
 
 rem ---- 1. Trouver Python

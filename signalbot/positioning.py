@@ -176,6 +176,12 @@ def _get_json(url: str, timeout: int = 15) -> dict:
         return json.loads(resp.read().decode())
 
 
+def reset_myfxbook() -> None:
+    """À appeler quand les identifiants changent (commande /myfxbook)."""
+    _mfx_session.update(id=None, ts=0.0)
+    _mfx_cache.update(ts=0.0, data={})
+
+
 def myfxbook_enabled() -> bool:
     return bool(settings.myfxbook_email and settings.myfxbook_password)
 

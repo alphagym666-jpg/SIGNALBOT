@@ -40,6 +40,12 @@ def enabled() -> bool:
     return bool(settings.anthropic_api_key)
 
 
+def reset_client() -> None:
+    """À appeler quand la clé change (commande /cle)."""
+    global _client
+    _client = None
+
+
 def _get_client() -> anthropic.AsyncAnthropic:
     global _client
     if _client is None:

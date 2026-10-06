@@ -245,7 +245,7 @@ def positioning_block(inst: Instrument, p: Positioning, myfxbook_on: bool) -> st
         lines.append(f"👥 <b>Particuliers (Myfxbook) :</b> {r.long_pct:.0f} % acheteurs / {r.short_pct:.0f} % "
                      f"vendeurs → {_crowd_reading(r.long_pct)}")
     elif inst.key == "XAU" and not myfxbook_on:
-        lines.append("👥 Particuliers : ajoute MYFXBOOK_EMAIL et MYFXBOOK_PASSWORD dans .env (compte gratuit)")
+        lines.append("👥 Particuliers : tape /myfxbook ton@courriel motdepasse (compte gratuit sur myfxbook.com)")
     if p.cot:
         c = p.cot
         lines.append(f"🏛️ <b>COT (gros spéculateurs, {e(c.date)}) :</b> {c.net:+,} contrats nets "

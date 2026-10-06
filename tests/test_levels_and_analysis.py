@@ -78,7 +78,7 @@ def test_analysis_with_ai(monkeypatch):
 def test_analysis_without_ai_is_honest(monkeypatch):
     monkeypatch.setattr(ai.settings, "anthropic_api_key", "")
     a = asyncio.run(analysis.analyze(_inputs(), [], [], [], ZoneInfo("America/Toronto")))
-    assert not a.ai and "ANTHROPIC_API_KEY" in a.overview and all(m.confidence == "faible" for m in a.markets)
+    assert not a.ai and "/cle" in a.overview and all(m.confidence == "faible" for m in a.markets)
 
 
 def test_level_alert_once_per_level(monkeypatch, tmp_path):

@@ -16,14 +16,14 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, Con
                           MessageHandler, filters)
 
 from . import ai, data, formatting as fmt
-from .config import INSTRUMENTS, Instrument, settings
+from .config import INSTRUMENTS, Instrument, save_env, settings
 from .analysis import (MarketInput, analyze as ai_analyze, build_prompt, compact_context, event_preview,
                        event_release, trade_review)
 from .levels import Level, manual_levels, parse_manual, pro_levels
 from .moves import cross_market_context, current_move, detect_move, explain
 from .news import NewsItem, events_between, fetch_calendar, fetch_news, relevant_news
 from .news_explain import NewsExplanation, digest as news_digest, explain as explain_news, market_take
-from .positioning import SOURCES, myfxbook_enabled, positioning, summary_for_ai
+from .positioning import SOURCES, myfxbook_enabled, positioning, reset_myfxbook, summary_for_ai
 from .regime import Regime, classify
 from .signals import Signal, evaluate
 from .state import State
@@ -37,6 +37,7 @@ MOVE_COOLDOWN = 45 * 60
 WEEKDAYS = (1, 2, 3, 4, 5)  # python-telegram-bot : 0 = dimanche
 
 HELP = """<b>SignalBot — Nasdaq & Or</b>
+🔧 Réglages : /etat · /cle ta-clé-claude · /myfxbook courriel motdepasse
 👇 Le plus simple : utilise les <b>boutons en bas</b> (ou /menu pour les réafficher).
 
 <b>Marché</b>
@@ -115,6 +116,9 @@ WATCHLIST_MENU = InlineKeyboardMarkup([[
 
 BOT_COMMANDS = [
     BotCommand("menu", "🏠 Afficher le menu"),
+    BotCommand("etat", "🔧 Ce qui est configuré (clé Claude, Myfxbook…)"),
+    BotCommand("cle", "🔑 Enregistrer ta clé Claude (ex. /cle sk-ant-...)"),
+    BotCommand("myfxbook", "👥 Enregistrer ton compte Myfxbook"),
     BotCommand("analyse", "🧠 Analyse IA : ce qui se trame sur NQ et l'or"),
     BotCommand("marche", "📊 Type de marché (tendance, range…)"),
     BotCommand("signaux", "🎯 Signaux d'achat / vente"),
@@ -242,6 +246,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply(update, _help_text()
                 + f"\n\n✅ Tu es abonné aux alertes (chat id <code>{chat_id}</code>)."
                 + "\n👇 Utilise les boutons en bas pour naviguer.", MAIN_MENU)
+    if not ai.enabled():
+        await reply(update, _status_text())
 
 
 def _help_text() -> str:
@@ -257,6 +263,70 @@ def _help_text() -> str:
 @restricted
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply(update, _help_text(), MAIN_MENU)
+
+
+async def _forget_secret_message(update: Update) -> bool:
+    """Essaie d'effacer le message qui contient une clé ou un mot de passe."""
+    try:
+        await update.message.delete()
+        return True
+    except Exception:
+        return False
+
+
+def _status_text() -> str:
+    ok, no = "✅", "❌"
+    claude = (f"{ok} Clé Claude enregistrée — modèle {fmt.e(settings.claude_model)}" if ai.enabled() else
+              f"{no} Clé Claude manquante → tape <code>/cle sk-ant-...</code> (console.anthropic.com)")
+    mfx = (f"{ok} Myfxbook : {fmt.e(settings.myfxbook_email)}" if myfxbook_enabled() else
+           f"{no} Myfxbook (optionnel) → <code>/myfxbook ton@courriel motdepasse</code>")
+    sg = [INSTRUMENTS[k].name for k in INSTRUMENTS if _manual_entries(k)]
+    return ("🔧 <b>État du bot</b>\n\n" + claude + "\n" + mfx + "\n"
+            + (f"{ok} Niveaux SpotGamma du jour : {fmt.e(', '.join(sg))}" if sg else
+               "➖ Niveaux SpotGamma (optionnel) : /sg") + "\n"
+            + f"📰 News : mode « {fmt.e(_news_mode())} », max {settings.news_max_per_day} avis par jour\n"
+            + f"🌙 Silence : {fmt.e(settings.quiet_hours or 'aucun')}")
+
+
+@restricted
+async def cmd_etat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await reply(update, _status_text())
+
+
+@restricted
+async def cmd_cle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    key = (context.args or [""])[0].strip()
+    if not key.startswith("sk-ant-"):
+        await reply(update, "🔑 Envoie ta clé comme ceci : <code>/cle sk-ant-xxxxxxxx</code>\n"
+                            "Tu la crées sur console.anthropic.com → Settings → API Keys.")
+        return
+    erased = await _forget_secret_message(update)
+    save_env("ANTHROPIC_API_KEY", key)
+    settings.anthropic_api_key = key
+    ai.reset_client()
+    test = await ai.ask("Réponds seulement : OK", web_search=False, system="Réponds en un mot.", effort="low")
+    status = ("✅ Clé Claude enregistrée et testée : l'IA est active !" if test else
+              "⚠️ Clé enregistrée, mais le test a échoué : vérifie la clé et ton crédit sur "
+              "console.anthropic.com, puis renvoie /cle.")
+    await reply(update, status + ("" if erased else
+                                  "\n🧹 Efface ton message qui contient la clé (appui long → Supprimer)."))
+
+
+@restricted
+async def cmd_myfxbook(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args or []
+    if len(args) < 2 or "@" not in args[0]:
+        await reply(update, "👥 Envoie ton compte comme ceci : <code>/myfxbook ton@courriel motdepasse</code>\n"
+                            "(compte gratuit sur myfxbook.com)")
+        return
+    erased = await _forget_secret_message(update)
+    email, password = args[0], " ".join(args[1:])
+    save_env("MYFXBOOK_EMAIL", email)
+    save_env("MYFXBOOK_PASSWORD", password)
+    settings.myfxbook_email, settings.myfxbook_password = email, password
+    reset_myfxbook()
+    await reply(update, "✅ Compte Myfxbook enregistré. Le sentiment des traders apparaîtra dans 🎯 Niveaux clés."
+                + ("" if erased else "\n🧹 Efface ton message qui contient le mot de passe."))
 
 
 @restricted
@@ -311,7 +381,7 @@ async def _pourquoi(update: Update, arg: str | None) -> None:
 NEWS_SEPARATOR = "\n\n〰️〰️〰️〰️〰️\n\n"
 
 
-NO_AI_FOOTER = ("\n\n💡 <i>Ajoute une clé ANTHROPIC_API_KEY dans .env pour avoir chaque news "
+NO_AI_FOOTER = ("\n\n💡 <i>Tape /cle suivi de ta clé Claude pour avoir chaque news "
                 "traduite, expliquée et vraiment triée par importance.</i>")
 DIGEST_HOURS = 12
 
@@ -426,7 +496,7 @@ ASK_TRADE = ("💬 <b>Décris ton idée de trade</b>, comme tu la dirais à un a
 
 async def _trade_review(update: Update, idea: str) -> None:
     if not ai.enabled():
-        await reply(update, "💬 Cette fonction a besoin de ta clé Claude (ANTHROPIC_API_KEY dans .env).")
+        await reply(update, "💬 Cette fonction a besoin de ta clé Claude : tape <code>/cle sk-ant-...</code>")
         return
     await update.effective_chat.send_message("💬 J'analyse ton trade avec les niveaux, les news et "
                                              "le type de marché…")
@@ -1070,7 +1140,7 @@ def build_app() -> Application:
                      ("menu", cmd_menu),
                      ("marche", cmd_marche), ("signaux", cmd_signaux), ("pourquoi", cmd_pourquoi),
                      ("news", cmd_news), ("resume", cmd_resume), ("niveaux", cmd_niveaux),
-                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("trade", cmd_trade), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
+                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("trade", cmd_trade), ("cle", cmd_cle), ("myfxbook", cmd_myfxbook), ("etat", cmd_etat), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
                      ("stock", cmd_stock), ("watchlist", cmd_watchlist), ("ajouter", cmd_ajouter),
                      ("retirer", cmd_retirer), ("brief", cmd_brief)]:
         app.add_handler(CommandHandler(name, fn))
