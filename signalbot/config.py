@@ -114,7 +114,7 @@ class Settings:
     move_check_seconds: int = _env_int("MOVE_CHECK_SECONDS", 120)
     signal_check_seconds: int = _env_int("SIGNAL_CHECK_SECONDS", 900)
     news_check_seconds: int = _env_int("NEWS_CHECK_SECONDS", 300)
-    calendar_check_seconds: int = _env_int("CALENDAR_CHECK_SECONDS", 300)
+    calendar_check_seconds: int = _env_int("CALENDAR_CHECK_SECONDS", 60)
 
     # Qualité minimale d'un signal pour être envoyé automatiquement (0-100)
     min_signal_score: int = _env_int("MIN_SIGNAL_SCORE", 70)

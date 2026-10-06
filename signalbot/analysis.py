@@ -127,7 +127,8 @@ class Analysis:
 
 
 def build_prompt(inputs: list[MarketInput], news: list[NewsItem], events: list[EconEvent],
-                 context: list[tuple[str, float, float]], tz) -> str:
+                 context: list[tuple[str, float, float]], tz,
+                 ask: str = "Dis-moi ce qui se trame et comment l'aborder aujourd'hui.") -> str:
     now = datetime.now(timezone.utc)
     parts = [f"Date et heure : {now.astimezone(tz):%Y-%m-%d %H:%M} (heure de l'Est)."]
     for m in inputs:
@@ -155,7 +156,7 @@ def build_prompt(inputs: list[MarketInput], news: list[NewsItem], events: list[E
     parts.append("\nNews récentes (titres, les plus importantes d'abord) :")
     parts += [f"- [{n.published.astimezone(tz):%H:%M}, {n.source}] {n.title}"
               + (f" — {n.summary[:200]}" if n.summary else "") for n in news[:25]] or ["- aucune"]
-    parts.append("\nDis-moi ce qui se trame et comment l'aborder aujourd'hui.")
+    parts.append("\n" + ask)
     return "\n".join(parts)
 
 
@@ -182,3 +183,78 @@ async def analyze(inputs: list[MarketInput], news: list[NewsItem], events: list[
     plans = {m["key"]: MarketPlan(**m) for m in data.get("markets", []) if m.get("key") in INSTRUMENTS}
     ordered = [plans[m.key] for m in inputs if m.key in plans]
     return Analysis(data["overview"], data.get("risk_events", []), ordered)
+
+
+# ------------------------------------------------------------------ résumé compact des niveaux
+
+def compact_context(inputs: list[MarketInput], max_levels: int = 8) -> str:
+    """Prix, type de marché H4 et niveaux les plus proches : contexte court pour l'IA."""
+    lines = []
+    for m in inputs:
+        name = INSTRUMENTS[m.key].name
+        h4 = m.regimes.get("H4")
+        head = f"{name} : prix {m.price if m.price is not None else 'n/d'}"
+        if h4:
+            head += f", H4 {h4.label}"
+        if m.positioning and m.positioning.gamma:
+            head += f", gamma {'positif' if m.positioning.gamma.positive else 'négatif'}"
+        lines.append(head)
+        if m.levels and m.price is not None:
+            near = sorted(m.levels, key=lambda lv: abs(lv.price - m.price))[:max_levels]
+            lines.append("  niveaux : " + " | ".join(f"{lv.label} {lv.price}" for lv in
+                                                     sorted(near, key=lambda lv: lv.price)))
+    return "\n".join(lines) or "indisponible"
+
+
+# ------------------------------------------------------------------ annonces économiques
+
+_TEXT_RULES = """Format : texte brut pour Telegram (pas de markdown, pas de #), puces avec « • », \
+1600 caractères maximum. Français simple et concret. Ne cite que des prix présents dans les \
+données (n'invente pas de niveaux). Pas de taille de position ni de conseil financier personnalisé."""
+
+EVENT_PREVIEW_SYSTEM = """Tu prépares un trader francophone (Québec) qui trade le Nasdaq 100 et \
+l'or à une annonce économique américaine qui sort bientôt.
+Donne, dans cet ordre :
+• C'est quoi l'annonce et pourquoi elle compte pour les taux d'intérêt (1-2 phrases).
+• Scénario « plus fort / plus chaud que prévu » : effet sur les taux, réaction probable du Nasdaq \
+et de l'or, et les niveaux où le prix pourrait aller ou réagir.
+• Scénario « plus faible / plus froid que prévu » : idem.
+• Scénario « conforme » : idem, en bref.
+• Le plan : où se placer (zones à surveiller, quelle confirmation attendre) et la prudence à \
+avoir (spreads, faux départs : souvent mieux d'attendre 5-15 min après la sortie).
+""" + _TEXT_RULES
+
+EVENT_RELEASE_SYSTEM = """Une annonce économique américaine vient de sortir. Tu fais le point pour \
+un trader francophone (Québec) qui trade le Nasdaq 100 et l'or.
+Si la recherche web est disponible, trouve le CHIFFRE RÉEL publié (et ne l'invente jamais : si tu \
+ne le trouves pas, dis-le et base-toi sur la réaction du prix).
+Donne, dans cet ordre :
+• Le chiffre réel vs prévu et ce que ça veut dire (plus chaud / plus froid / conforme).
+• L'effet sur les taux d'intérêt (la Fed plus dure ou plus douce ?).
+• Ce que le marché a fait depuis la sortie (variation fournie) et ce qui pourrait se passer ensuite : \
+continuation ou retour ? Pour le Nasdaq ET pour l'or.
+• Où se placer : les niveaux à surveiller, la confirmation à attendre, et l'invalidation.
+""" + _TEXT_RULES
+
+TRADE_SYSTEM = """Tu es le coach de trading d'un trader francophone (Québec) qui trade le Nasdaq 100 \
+et l'or. Il te décrit une idée de trade. Analyse-la honnêtement avec les données du marché fournies.
+Donne, dans cet ordre :
+• Verdict en une ligne : ✅ bonne idée, ⚠️ moyenne / à ajuster, ou ❌ à éviter maintenant.
+• Pourquoi : dans le sens ou contre la tendance, proche de quels niveaux, news ou annonces à risque.
+• Mieux placé : entrée, stop (de l'autre côté d'un niveau, pas au milieu de nulle part) et 1-2 \
+objectifs basés sur les niveaux fournis, avec le ratio gain / risque approximatif.
+• Ce qui invaliderait l'idée et ce qu'il faut surveiller.
+S'il manque une info (sens, prix d'entrée, stop), fais l'analyse quand même et propose des valeurs.
+""" + _TEXT_RULES
+
+
+async def event_preview(prompt: str) -> str | None:
+    return await ai.ask(prompt, web_search=False, system=EVENT_PREVIEW_SYSTEM, effort="medium")
+
+
+async def event_release(prompt: str) -> str | None:
+    return await ai.ask(prompt, web_search=True, system=EVENT_RELEASE_SYSTEM, effort="medium")
+
+
+async def trade_review(prompt: str) -> str | None:
+    return await ai.ask(prompt, web_search=False, system=TRADE_SYSTEM, effort="high")

@@ -350,6 +350,10 @@ def market_take_message(t: MarketTake, sources: list[NewsItem]) -> str:
     lines = [f"🧠 <b>{e(t.headline)}</b>", "", e(t.take), "",
              f"🏦 Taux : {_RATES_ICON.get(t.rates, t.rates)}" + (f" — {e(t.rates_why)}" if t.rates_why else ""),
              f"📊 Nasdaq : {_DIR_ICON.get(t.nasdaq, t.nasdaq)}   🥇 Or : {_DIR_ICON.get(t.gold, t.gold)}"]
+    if t.next:
+        lines.append(f"🔮 <b>Ce qui pourrait se passer :</b> {e(t.next)}")
+    if t.where:
+        lines.append(f"📍 <b>Où se placer :</b> {e(t.where)}")
     if sources:
         lines.append("🔗 " + " · ".join(f"<a href=\"{attr(n.link)}\">{e(n.source)}</a>" for n in sources))
     return "\n".join(lines)

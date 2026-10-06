@@ -17,7 +17,8 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, Con
 
 from . import ai, data, formatting as fmt
 from .config import INSTRUMENTS, Instrument, settings
-from .analysis import MarketInput, analyze as ai_analyze
+from .analysis import (MarketInput, analyze as ai_analyze, build_prompt, compact_context, event_preview,
+                       event_release, trade_review)
 from .levels import Level, manual_levels, parse_manual, pro_levels
 from .moves import cross_market_context, current_move, detect_move, explain
 from .news import NewsItem, events_between, fetch_calendar, fetch_news, relevant_news
@@ -46,6 +47,7 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 /niveaux — niveaux clés : gamma, VWAP, haut/bas d'hier et de la nuit, profil de volume, COT
 /sg nq call 25000 put 24000 flip 24500 — taper tes niveaux SpotGamma du jour
 /chart — 📺 code TradingView du jour, niveaux déjà dedans, à copier-coller
+/trade acheter l'or vers 4200 stop 4185 — 💬 l'IA analyse ton idée de trade
 /brief — plan de match du jour
 
 <b>News</b>
@@ -75,6 +77,7 @@ BTN_RESUME = "🧭 Résumé des news"
 BTN_NIVEAUX = "🎯 Niveaux clés"
 BTN_ANALYSE = "🧠 Analyse IA : ce qui se trame"
 BTN_TV = "📺 TradingView"
+BTN_TRADE = "💬 Analyse mon trade"
 BTN_CALENDRIER = "🗓️ Calendrier"
 BTN_POURQUOI = "❓ Pourquoi ça bouge"
 BTN_BRIEF = "☀️ Brief du jour"
@@ -90,7 +93,8 @@ MAIN_MENU = ReplyKeyboardMarkup(
      [BTN_RESUME, BTN_NEWS],
      [BTN_CALENDRIER, BTN_BRIEF],
      [BTN_STOCKS, BTN_STOCK],
-     [BTN_WATCHLIST, BTN_TV],
+     [BTN_TRADE, BTN_TV],
+     [BTN_WATCHLIST],
      [BTN_AIDE]],
     resize_keyboard=True,
     is_persistent=True,
@@ -119,6 +123,7 @@ BOT_COMMANDS = [
     BotCommand("niveaux", "🎯 Niveaux clés : gamma, VWAP, profil de volume…"),
     BotCommand("sg", "✍️ Taper les niveaux SpotGamma (ex. /sg nq call 25000)"),
     BotCommand("chart", "📺 Code TradingView du jour à copier-coller"),
+    BotCommand("trade", "💬 L'IA analyse ton idée de trade"),
     BotCommand("calendrier", "🗓️ Annonces économiques"),
     BotCommand("pourquoi", "❓ Pourquoi ça bouge (nq / or)"),
     BotCommand("brief", "☀️ Plan de match du jour"),
@@ -404,6 +409,43 @@ def _market_inputs() -> list[MarketInput]:
     return out
 
 
+async def _context_prompt(ask: str) -> tuple[str, list[MarketInput]]:
+    """Tout le contexte du marché (prix, niveaux, régimes, news, calendrier) + la question."""
+    inputs, items, events, context = await asyncio.gather(
+        asyncio.to_thread(_market_inputs), asyncio.to_thread(fetch_news, 8),
+        asyncio.to_thread(fetch_calendar), asyncio.to_thread(cross_market_context))
+    news = relevant_news(items, None, min_score=settings.min_news_score)
+    return build_prompt(inputs, news, events, context, settings.timezone, ask=ask), inputs
+
+
+ASK_TRADE = ("💬 <b>Décris ton idée de trade</b>, comme tu la dirais à un ami. Exemples :\n"
+             "• <code>acheter l'or vers 4200, stop 4185</code>\n"
+             "• <code>short nasdaq à 24600 si ça rejette</code>\n"
+             "• <code>je suis long NQ depuis 24450, je garde ?</code>")
+
+
+async def _trade_review(update: Update, idea: str) -> None:
+    if not ai.enabled():
+        await reply(update, "💬 Cette fonction a besoin de ta clé Claude (ANTHROPIC_API_KEY dans .env).")
+        return
+    await update.effective_chat.send_message("💬 J'analyse ton trade avec les niveaux, les news et "
+                                             "le type de marché…")
+    prompt, _ = await _context_prompt(f"Voici mon idée de trade : « {idea} ». Analyse-la.")
+    answer = await trade_review(prompt)
+    await reply(update, ("💬 <b>Ton trade</b> : <i>" + fmt.e(idea) + "</i>\n\n" + fmt.e(answer)
+                         if answer else "Désolé, l'analyse n'a pas fonctionné. Réessaie dans un instant.")
+                + "\n\n" + fmt.DISCLAIMER)
+
+
+@restricted
+async def cmd_trade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        context.user_data["await"] = "trade"
+        await reply(update, ASK_TRADE)
+        return
+    await _trade_review(update, " ".join(context.args))
+
+
 async def _analysis_text() -> str:
     inputs, items, events, context = await asyncio.gather(
         asyncio.to_thread(_market_inputs), asyncio.to_thread(fetch_news, 14),
@@ -671,10 +713,16 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if text == BTN_WATCHLIST:
         await _show_watchlist(update)
         return
+    if text == BTN_TRADE:
+        context.user_data["await"] = "trade"
+        await reply(update, ASK_TRADE)
+        return
 
     waiting = context.user_data.pop("await", None)
     tickers = [t for t in text.replace(",", " ").upper().split() if t]
-    if waiting == "stock" and tickers:
+    if waiting == "trade":
+        await _trade_review(update, text)
+    elif waiting == "stock" and tickers:
         await _stock_detail(update, tickers[0])
     elif waiting == "add":
         await reply(update, _add_tickers(tickers))
@@ -870,7 +918,8 @@ async def _send_market_take(context: ContextTypes.DEFAULT_TYPE, fresh: list[News
     if len(takes) >= settings.news_max_per_day or in_quiet_hours():
         return  # la nuit, le brief du matin fera le point
     candidates = relevant_news(fresh, None, min_score=max(3, settings.min_news_score - 2))[:15]
-    take = await market_take(candidates, [t["headline"] for t in takes])
+    inputs = await asyncio.to_thread(_market_inputs)
+    take = await market_take(candidates, [t["headline"] for t in takes], compact_context(inputs))
     if not take or not take.important:
         return
     by_id = {n.id: n for n in candidates}
@@ -919,22 +968,79 @@ async def job_digest(context: ContextTypes.DEFAULT_TYPE) -> None:
         await broadcast(context, text)
 
 
+def _group_by_time(events: list) -> list[list]:
+    groups: dict = {}
+    for ev in events:
+        groups.setdefault(ev.time, []).append(ev)
+    return [groups[t] for t in sorted(groups)]
+
+
+async def _event_preview_text(evs: list, minutes: int) -> str:
+    tz = settings.timezone
+    head = (f"⏰ <b>Dans {minutes} min ({evs[0].time.astimezone(tz):%H:%M}) : "
+            f"{fmt.e(' + '.join(ev.title for ev in evs))}</b>\n"
+            + "\n".join(fmt.event_line(ev, tz) for ev in evs))
+    text = None
+    if ai.enabled():
+        desc = "; ".join(f"{ev.title} (prévu {ev.forecast}, précédent {ev.previous})" for ev in evs)
+        prompt, _ = await _context_prompt(
+            f"Dans {minutes} minutes sort : {desc}. Prépare-moi : scénarios et où me placer.")
+        text = await event_preview(prompt)
+    if text:
+        return head + "\n\n🧠 <b>Les scénarios</b>\n" + fmt.e(text)
+    return (head + "\n\nAttends-toi à de la volatilité sur le Nasdaq et l'or. Les spreads s'élargissent "
+            "et les stops sautent facilement : prudence avec les positions ouvertes.")
+
+
+async def _event_release_text(evs: list, minutes_since: int) -> str:
+    tz = settings.timezone
+    moves = {}
+    for inst in INSTRUMENTS.values():
+        ch = await asyncio.to_thread(data.last_change, inst.ticker, minutes_since + 5)
+        if ch:
+            moves[inst.name] = ch[1]
+    react = " · ".join(f"{name} <b>{chg:+.2f} %</b>" for name, chg in moves.items()) or "n/d"
+    head = (f"📢 <b>Vient de sortir ({evs[0].time.astimezone(tz):%H:%M}) : "
+            f"{fmt.e(' + '.join(ev.title for ev in evs))}</b>\n"
+            + "\n".join(f"• {fmt.e(ev.title)} : prévu {fmt.e(ev.forecast)}, précédent {fmt.e(ev.previous)}"
+                        for ev in evs)
+            + f"\n📊 Réaction depuis : {react}")
+    text = None
+    if ai.enabled():
+        desc = "; ".join(f"{ev.title} (prévu {ev.forecast}, précédent {ev.previous})" for ev in evs)
+        react_txt = ", ".join(f"{n} {c:+.2f} %" for n, c in moves.items()) or "inconnue"
+        prompt, _ = await _context_prompt(
+            f"Vient de sortir il y a {minutes_since} min : {desc}. Réaction du prix depuis : {react_txt}. "
+            "Trouve le chiffre réel, dis-moi ce que ça veut dire, ce qui pourrait se passer et où me placer.")
+        text = await event_release(prompt)
+    if text:
+        return head + "\n\n🧠 <b>Ce que j'en pense</b>\n" + fmt.e(text)
+    return head + "\n\nRegarde si la première réaction tient 5 à 15 minutes avant de suivre le mouvement."
+
+
 async def job_calendar(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Avant une grosse annonce : scénarios. Quand elle sort : le chiffre et quoi faire."""
     events = await asyncio.to_thread(fetch_calendar)
     now = datetime.now(timezone.utc)
     soon = events_between(events, now, now + timedelta(minutes=settings.calendar_reminder_minutes))
-    for ev in soon:
-        key = f"cal:{ev.id}"
+    for evs in _group_by_time(soon):
+        key = "cal:" + evs[0].id
         if state.seen(key):
             continue
-        state.mark_seen(key)
-        minutes = max(1, int((ev.time - now).total_seconds() // 60))
-        await broadcast(context,
-                        f"⏰ <b>Annonce à fort impact dans {minutes} min</b>\n\n"
-                        + fmt.event_line(ev, settings.timezone)
-                        + "\n\nAttends-toi à de la volatilité sur le Nasdaq et l'or. "
-                          "Les spreads s'élargissent et les stops sautent facilement : "
-                          "prudence avec les positions ouvertes.")
+        for ev in evs:
+            state.mark_seen("cal:" + ev.id)
+        minutes = max(1, int((evs[0].time - now).total_seconds() // 60))
+        await broadcast(context, await _event_preview_text(evs, minutes), urgent=True)
+
+    released = events_between(events, now - timedelta(minutes=25), now - timedelta(minutes=2))
+    for evs in _group_by_time(released):
+        key = "calpost:" + evs[0].id
+        if state.seen(key):
+            continue
+        for ev in evs:
+            state.mark_seen("calpost:" + ev.id)
+        minutes_since = max(1, int((now - evs[0].time).total_seconds() // 60))
+        await broadcast(context, await _event_release_text(evs, minutes_since), urgent=True)
 
 
 async def job_brief(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -964,7 +1070,7 @@ def build_app() -> Application:
                      ("menu", cmd_menu),
                      ("marche", cmd_marche), ("signaux", cmd_signaux), ("pourquoi", cmd_pourquoi),
                      ("news", cmd_news), ("resume", cmd_resume), ("niveaux", cmd_niveaux),
-                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
+                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("trade", cmd_trade), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
                      ("stock", cmd_stock), ("watchlist", cmd_watchlist), ("ajouter", cmd_ajouter),
                      ("retirer", cmd_retirer), ("brief", cmd_brief)]:
         app.add_handler(CommandHandler(name, fn))

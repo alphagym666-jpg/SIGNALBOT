@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -145,15 +146,29 @@ class EconEvent:
         return hashlib.sha1(f"{self.title}{self.time.isoformat()}".encode()).hexdigest()[:16]
 
 
+_calendar_cache: dict = {"ts": 0.0, "raw": None}
+CALENDAR_TTL = 900  # le flux n'est mis à jour qu'environ une fois par heure : pas besoin de plus
+
+
 def fetch_calendar(countries: tuple[str, ...] = ("USD",),
                    impacts: tuple[str, ...] = ("High",)) -> list[EconEvent]:
+    if _calendar_cache["raw"] is not None and time.time() - _calendar_cache["ts"] < CALENDAR_TTL:
+        return _parse_calendar(_calendar_cache["raw"], countries, impacts)
     try:
         req = urllib.request.Request(CALENDAR_URL, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=15) as resp:
             raw = json.loads(resp.read().decode())
     except Exception as exc:
         log.warning("Calendrier économique indisponible: %s", exc)
-        return []
+        _calendar_cache["ts"] = time.time() - CALENDAR_TTL + 120  # on réessaie dans 2 min
+        if _calendar_cache["raw"] is None:
+            _calendar_cache["raw"] = []
+        return _parse_calendar(_calendar_cache["raw"], countries, impacts)
+    _calendar_cache.update(ts=time.time(), raw=raw)
+    return _parse_calendar(raw, countries, impacts)
+
+
+def _parse_calendar(raw: list, countries: tuple[str, ...], impacts: tuple[str, ...]) -> list[EconEvent]:
     events = []
     for e in raw:
         if e.get("country") not in countries or e.get("impact") not in impacts:

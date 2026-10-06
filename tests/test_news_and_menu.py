@@ -60,10 +60,10 @@ def test_ai_failure_falls_back(monkeypatch):
 
 def test_menu_buttons_are_all_handled():
     labels = [b.text for row in bot.MAIN_MENU.keyboard for b in row]
-    assert len(labels) == 14 and bot.BTN_TV in labels and bot.BTN_ANALYSE == labels[0] and bot.BTN_NIVEAUX in labels
+    assert len(labels) == 15 and bot.BTN_TRADE in labels and bot.BTN_TV in labels and bot.BTN_ANALYSE == labels[0] and bot.BTN_NIVEAUX in labels
     assert all(any(ch for ch in label if ord(ch) > 0x2000) for label in labels)  # icône
     names = {c.command for c in bot.BOT_COMMANDS}
-    assert {"menu", "analyse", "sg", "chart", "marche", "news", "resume", "niveaux", "stocks"} <= names
+    assert {"menu", "analyse", "sg", "chart", "trade", "marche", "news", "resume", "niveaux", "stocks"} <= names
 
 
 def test_card_shows_reaction_and_rates(monkeypatch):

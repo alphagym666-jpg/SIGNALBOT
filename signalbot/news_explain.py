@@ -302,6 +302,8 @@ class MarketTake:
     nasdaq: str
     gold: str
     key_ids: list[str]
+    next: str = ""  # ce qui pourrait se passer ensuite
+    where: str = ""  # où se placer (niveaux)
 
 
 TAKE_SYSTEM = """Tu es le filtre de nouvelles personnel d'un trader francophone (Québec) qui trade \
@@ -327,6 +329,9 @@ Si important :
 ça change pour les taux d'intérêt, ce que tu en penses pour le Nasdaq et pour l'or, et quoi \
 surveiller. Concret et honnête (dis-le si l'effet est incertain). Pas de conseil financier.
 - rates (+ rates_why en 1 phrase), nasdaq, gold : l'effet probable.
+- next : 1-2 phrases sur ce qui pourrait se passer ensuite (continuation, retour, volatilité).
+- where : 1-2 phrases sur où se placer, avec les niveaux fournis (ne jamais inventer un prix) et \
+la confirmation à attendre.
 - key_ids : les id des 1 à 3 news à l'origine.
 Si pas important : remplis les champs texte avec des chaînes vides et key_ids vide."""
 
@@ -341,13 +346,17 @@ TAKE_SCHEMA = {
         "nasdaq": {"type": "string", "enum": list(DIRECTIONS)},
         "gold": {"type": "string", "enum": list(DIRECTIONS)},
         "key_ids": {"type": "array", "items": {"type": "string"}},
+        "next": {"type": "string"},
+        "where": {"type": "string"},
     },
-    "required": ["important", "headline", "take", "rates", "rates_why", "nasdaq", "gold", "key_ids"],
+    "required": ["important", "headline", "take", "rates", "rates_why", "nasdaq", "gold", "key_ids",
+                 "next", "where"],
     "additionalProperties": False,
 }
 
 
-async def market_take(items: list[NewsItem], already_sent: list[str]) -> MarketTake | None:
+async def market_take(items: list[NewsItem], already_sent: list[str],
+                      market_context: str = "") -> MarketTake | None:
     """Claude lit les nouvelles news et dit s'il y a quelque chose d'important (None sans IA)."""
     if not items or not ai.enabled():
         return None
@@ -356,6 +365,7 @@ async def market_take(items: list[NewsItem], already_sent: list[str]) -> MarketT
         f"résumé: {n.summary or '-'}" for n in items)
     sent = "\n".join(f"- {h}" for h in already_sent) or "- rien encore"
     data = await ai.ask_json(
+        f"Marché en ce moment (prix et niveaux) :\n{market_context or 'indisponible'}\n\n"
         f"Déjà envoyé aujourd'hui :\n{sent}\n\nNouvelles news ({len(items)}) :\n\n{listing}",
         TAKE_SCHEMA, system=TAKE_SYSTEM, effort="low")
     if not data:
@@ -363,4 +373,5 @@ async def market_take(items: list[NewsItem], already_sent: list[str]) -> MarketT
     ids = {n.id for n in items}
     return MarketTake(bool(data["important"]), data["headline"], data["take"], data["rates"],
                       data["rates_why"], data["nasdaq"], data["gold"],
-                      [i for i in data["key_ids"] if i in ids][:3])
+                      [i for i in data["key_ids"] if i in ids][:3], data.get("next", ""),
+                      data.get("where", ""))

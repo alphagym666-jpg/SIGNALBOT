@@ -57,6 +57,7 @@ def test_ai_filter_sends_only_important_and_respects_daily_cap(monkeypatch, tmp_
     monkeypatch.setattr(bot.settings, "news_max_per_day", 1)
     monkeypatch.setattr(bot.settings, "allowed_chat_ids", [1])
     monkeypatch.setattr(bot, "state", State(tmp_path / "s.json"))
+    monkeypatch.setattr(bot, "_market_inputs", lambda: [])  # pas de réseau dans les tests
     bot.state.data["seen"] = {"news:old": 1}
     calls = []
 

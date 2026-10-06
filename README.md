@@ -1,6 +1,8 @@
 # SignalBot 📈 — Nasdaq, Or & Actions sur Telegram
 
-> **Mode calme (par défaut)** : le brief du matin, puis l'IA (Claude Sonnet) lit toutes les news pour toi et t'écrit **seulement quand c'est vraiment important** (taux, Fed, inflation, géopolitique…), dans ses mots, max 4 fois par jour. Les gros mouvements passent toujours ; le reste se tait la nuit (22 h – 7 h). Tout le reste est disponible sur demande avec les boutons.
+> **Mode calme (par défaut)** : le brief du matin, puis l'IA (Claude Sonnet) lit toutes les news pour toi et t'écrit **seulement quand c'est vraiment important** (taux, Fed, inflation, géopolitique…), dans ses mots, avec ce qui pourrait se passer et où se placer, max 4 fois par jour.
+> **Grosses annonces (CPI, emploi, Fed…)** : 30 min avant, les scénarios (plus chaud / plus froid que prévu) et où se placer ; dès la sortie, le vrai chiffre, ce qu'il veut dire et la suite probable.
+> **💬 Analyse mon trade** : décris ton idée, l'IA l'analyse avec les niveaux, les news et le type de marché. Les gros mouvements passent toujours ; le reste se tait la nuit (22 h – 7 h). Tout le reste est disponible sur demande avec les boutons.
 
 Bot Telegram qui t'aide à **comprendre le marché** avant de trader :
 
@@ -49,6 +51,7 @@ Après `/start`, un **menu à boutons avec icônes** reste affiché en bas de Te
 | `/brief` | Plan de match du jour |
 | `/analyse` | 🧠 Analyse IA complète : ce qui se trame, scénarios, zones, invalidation |
 | `/sg nq call 25000 put 24000 flip 24500` | Taper tes niveaux SpotGamma du jour (en prix NQ/or ou QQQ/GLD) |
+| `/trade acheter l'or vers 4200 stop 4185` | 💬 L'IA analyse ton idée de trade (verdict, meilleure entrée, stop, objectifs) |
 | `/chart` | 📺 Code TradingView du jour (fichier, niveaux déjà dedans) + ligne rapide à coller |
 | `/niveaux` | Niveaux clés : gamma des options, particuliers, COT |
 | `/resume` | Résumé : le marché penche vers où, et les taux ? |
