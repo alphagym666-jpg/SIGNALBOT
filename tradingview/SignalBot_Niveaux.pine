@@ -2,6 +2,9 @@
 // SignalBot Niveaux — indicateur TradingView relié au bot Telegram SignalBot
 //
 // Ce qu'il affiche :
+//   0. Des ZONES ACHAT (vert) / VENTE (rouge) avec une force ★, comme le graphique /zones du bot :
+//      les niveaux proches sont regroupés, chaque raison ajoute de la force (murs gamma,
+//      bascule gamma, SpotGamma et zones IA comptent double).
 //   1. Les niveaux du bot (commande /tv dans Telegram, à coller dans les paramètres) :
 //      murs gamma des options, bascule gamma, niveaux SpotGamma, profil de volume d'hier
 //      (POC, zone de valeur), zones d'achat / de vente / invalidation de l'analyse IA,
@@ -16,7 +19,7 @@
 //   5. Une alerte quand le prix croise un niveau du bot (créer une alerte
 //      « Any alert() function call » / « N'importe quel appel de la fonction alert() »).
 
-indicator("SignalBot Niveaux", shorttitle="SignalBot", overlay=true, max_lines_count=200, max_labels_count=200)
+indicator("SignalBot Niveaux", shorttitle="SignalBot", overlay=true, max_lines_count=200, max_labels_count=200, max_boxes_count=100)
 
 // ------------------------------------------------------------------ paramètres
 grpBot = "Niveaux du bot Telegram (commande /tv)"
@@ -27,10 +30,18 @@ refNQ = input.symbol("CME_MINI:NQ1!", "Référence Nasdaq (prix des niveaux)", g
 refXAU = input.symbol("COMEX:GC1!", "Référence or (prix des niveaux)", group=grpBot)
 extendBars = input.int(25, "Longueur des lignes vers la droite (bougies)", minval=1, group=grpBot)
 
+grpZ = "Zones (comme le graphique /zones du bot)"
+styleIn = input.string("Zones", "Affichage des niveaux", options=["Zones", "Lignes", "Les deux"], group=grpZ)
+zoneLive = input.bool(true, "Ajouter hier, la nuit, la semaine passée et le VWAP dans les zones", group=grpZ)
+mergeIn = input.float(0.0, "Écart pour regrouper en zone (%) — 0 = auto", minval=0, step=0.05, group=grpZ)
+perSide = input.int(4, "Nombre de zones de chaque côté du prix", minval=1, maxval=10, group=grpZ)
+maxDist = input.float(4.0, "Distance max du prix (%)", minval=0.5, step=0.5, group=grpZ)
+zoneLeft = input.int(80, "Longueur des zones vers la gauche (bougies)", minval=5, group=grpZ)
+
 grpLive = "Niveaux calculés en direct"
 showVwap = input.bool(true, "VWAP de la séance", group=grpLive)
-showPrev = input.bool(true, "Haut / bas / clôture d'hier", group=grpLive)
-showON = input.bool(true, "Haut / bas de la nuit (18 h - 9 h 30 New York)", group=grpLive)
+showPrev = input.bool(false, "Lignes haut / bas / clôture d'hier (déjà dans les zones)", group=grpLive)
+showON = input.bool(false, "Haut / bas de la nuit (18 h - 9 h 30 New York)", group=grpLive)
 showEma = input.bool(true, "EMA 20 / 50 / 200", group=grpLive)
 
 grpSig = "Signaux"
@@ -75,6 +86,23 @@ levelColor(string name) =>
         c := color.aqua
     c
 
+shortName(string name) =>
+    str.replace_all(str.replace_all(name, " (options)", ""), " (SpotGamma)", " SG")
+
+// murs gamma, bascule, SpotGamma et zones IA comptent double
+zoneWeight(string name) =>
+    u = str.upper(name)
+    str.contains(u, "WALL") or str.contains(u, "BASCULE") or str.contains(u, "SPOTGAMMA") or str.contains(u, " SG") or str.contains(u, " IA") ? 2 : 1
+
+drawZone(array<box> bxs, array<label> lbs, float lo, float hi, int f, string txt, bool buy, int left, int ext) =>
+    col = buy ? color.green : color.red
+    string stars = ""
+    for s = 1 to math.min(f, 5)
+        stars += "★"
+    mid = (lo + hi) / 2
+    array.push(bxs, box.new(math.max(0, bar_index - left), hi, bar_index + ext, lo, border_color=color.new(col, 30), bgcolor=color.new(col, 82 - 6 * math.min(f, 5))))
+    array.push(lbs, label.new(bar_index + ext, mid, (buy ? "ACHAT " : "VENTE ") + stars + "  " + str.tostring(mid, format.mintick) + "\n" + txt, color=color.new(col, 10), textcolor=color.white, style=label.style_label_left, size=size.small))
+
 regimeColor(string r) =>
     r == "Tendance haussière" or r == "Légèrement haussier" ? color.lime : r == "Tendance baissière" or r == "Légèrement baissier" ? color.red : r == "Range" ? color.yellow : color.silver
 
@@ -109,6 +137,7 @@ f_trend() =>
 vwapV = ta.vwap(hlc3)
 plot(showVwap and timeframe.isintraday ? vwapV : na, "VWAP", color=color.new(color.yellow, 0), linewidth=2)
 
+[pwh, pwl] = request.security(syminfo.tickerid, "W", [high[1], low[1]], lookahead=barmerge.lookahead_on)
 [pdh, pdl, pdc] = request.security(syminfo.tickerid, "D", [high[1], low[1], close[1]], lookahead=barmerge.lookahead_on)
 plot(showPrev ? pdh : na, "Haut d'hier", color=color.new(color.red, 20), style=plot.style_stepline)
 plot(showPrev ? pdl : na, "Bas d'hier", color=color.new(color.green, 20), style=plot.style_stepline)
@@ -154,6 +183,7 @@ alertcondition(newShort, "SignalBot : signal de vente", "SignalBot : repli vende
 // ------------------------------------------------------------------ niveaux du bot (/tv)
 var array<line> drawnLines = array.new<line>()
 var array<label> drawnLabels = array.new<label>()
+var array<box> drawnBoxes = array.new<box>()
 var array<float> lvPrices = array.new<float>()
 var array<string> lvNames = array.new<string>()
 var string biasTxt = "n/d"
@@ -165,6 +195,9 @@ if barstate.islast
         line.delete(ln)
     for lb in drawnLabels
         label.delete(lb)
+    for bx in drawnBoxes
+        box.delete(bx)
+    array.clear(drawnBoxes)
     array.clear(drawnLines)
     array.clear(drawnLabels)
     array.clear(lvPrices)
@@ -189,10 +222,93 @@ if barstate.islast
                         name = array.get(kv, 1)
                         price = p * ratio
                         col = levelColor(name)
-                        array.push(drawnLines, line.new(bar_index - 60, price, bar_index + extendBars, price, color=col, width=2, style=line.style_dashed))
-                        array.push(drawnLabels, label.new(bar_index + extendBars, price, name + "  " + str.tostring(price, format.mintick), color=color.new(col, 80), textcolor=col, style=label.style_label_left, size=size.small))
+                        if styleIn != "Zones"
+                            array.push(drawnLines, line.new(bar_index - 60, price, bar_index + extendBars, price, color=col, width=2, style=line.style_dashed))
+                            array.push(drawnLabels, label.new(bar_index + extendBars, price, name + "  " + str.tostring(price, format.mintick), color=color.new(col, 80), textcolor=col, style=label.style_label_left, size=size.small))
                         array.push(lvPrices, price)
                         array.push(lvNames, name)
+
+    // ---------- zones : on regroupe les niveaux proches, chaque raison ajoute de la force
+    if styleIn != "Lignes"
+        zP = array.copy(lvPrices)
+        zN = array.copy(lvNames)
+        if zoneLive
+            if not na(pdh)
+                array.push(zP, pdh)
+                array.push(zN, "Haut d'hier")
+            if not na(pdl)
+                array.push(zP, pdl)
+                array.push(zN, "Bas d'hier")
+            if not na(pwh)
+                array.push(zP, pwh)
+                array.push(zN, "Haut semaine passée")
+            if not na(pwl)
+                array.push(zP, pwl)
+                array.push(zN, "Bas semaine passée")
+            if timeframe.isintraday and not na(onH)
+                array.push(zP, onH)
+                array.push(zN, "Haut de la nuit")
+            if timeframe.isintraday and not na(onL)
+                array.push(zP, onL)
+                array.push(zN, "Bas de la nuit")
+            if timeframe.isintraday and not na(vwapV)
+                array.push(zP, vwapV)
+                array.push(zN, "VWAP")
+        tolPct = mergeIn > 0 ? mergeIn : mkt == "XAU" ? 0.25 : 0.18
+        tol = close * tolPct / 100
+        gLo = array.new<float>()
+        gHi = array.new<float>()
+        gF = array.new<int>()
+        gT = array.new<string>()
+        float curLo = na
+        float curHi = na
+        int curF = 0
+        string curT = ""
+        n = array.size(zP)
+        if n > 0
+            idx = array.sort_indices(zP, order.ascending)
+            for k = 0 to n - 1
+                i = array.get(idx, k)
+                p = array.get(zP, i)
+                nm = shortName(array.get(zN, i))
+                if math.abs(p - close) / close * 100 <= maxDist
+                    if not na(curHi) and p - curHi <= tol
+                        curHi := p
+                        curF += zoneWeight(nm)
+                        if not str.contains(curT, nm)
+                            curT := curT + ", " + nm
+                    else
+                        if not na(curLo)
+                            array.push(gLo, curLo)
+                            array.push(gHi, curHi)
+                            array.push(gF, curF)
+                            array.push(gT, curT)
+                        curLo := p
+                        curHi := p
+                        curF := zoneWeight(nm)
+                        curT := nm
+            if not na(curLo)
+                array.push(gLo, curLo)
+                array.push(gHi, curHi)
+                array.push(gF, curF)
+                array.push(gT, curT)
+        pad = tol * 0.25
+        ng = array.size(gLo)
+        if ng > 0
+            nBuy = 0
+            for k = ng - 1 to 0
+                lo = array.get(gLo, k) - pad
+                hi = array.get(gHi, k) + pad
+                if (lo + hi) / 2 < close and nBuy < perSide
+                    drawZone(drawnBoxes, drawnLabels, lo, hi, array.get(gF, k), array.get(gT, k), true, zoneLeft, extendBars)
+                    nBuy += 1
+            nSell = 0
+            for k = 0 to ng - 1
+                lo = array.get(gLo, k) - pad
+                hi = array.get(gHi, k) + pad
+                if (lo + hi) / 2 >= close and nSell < perSide
+                    drawZone(drawnBoxes, drawnLabels, lo, hi, array.get(gF, k), array.get(gT, k), false, zoneLeft, extendBars)
+                    nSell += 1
 
 // alerte quand le prix croise un niveau du bot (à la clôture de la bougie)
 if barstate.isrealtime and barstate.isconfirmed and array.size(lvPrices) > 0

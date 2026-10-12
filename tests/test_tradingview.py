@@ -77,3 +77,11 @@ def test_market_detection_rules_match_pine():
         assert _pine_market(t) == "NQ"
     for t in ("EURUSD", "US30", "SPX500", "BTCUSD"):
         assert _pine_market(t) == ""
+
+
+def test_pine_draws_zones_like_the_bot():
+    src = (Path(__file__).resolve().parent.parent / "tradingview" / "SignalBot_Niveaux.pine").read_text()
+    for word in ("box.new(", "drawZone(", '"ACHAT "', '"VENTE "', "★", "Haut semaine passée",
+                 'mkt == "XAU" ? 0.25 : 0.18', "max_boxes_count"):
+        assert word in src
+    assert "order = " not in src  # ne pas cacher le mot-clé « order » de Pine
