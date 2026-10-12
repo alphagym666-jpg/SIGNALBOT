@@ -109,6 +109,21 @@ Pour recevoir les alertes 24/7, fais tourner le bot sur un serveur toujours allu
 
 ---
 
+## 🎓 Le prof et le coach des zones
+
+- **🎓 Le prof** (`/prof`, 1er bouton) : Claude analyse TOUT — zones gamma et de liquidité, sweeps, type de marché,
+  sentiment (Myfxbook à contre-courant, COT), macro, taux, news, annonces, grosses entreprises du Nasdaq (recherche web)
+  — et donne pour le Nasdaq et l'or : 🟢 achat / 🔴 vente à surveiller ou ⛔ pas de trade, conviction /100,
+  la zone, la confirmation à attendre, le stop, les objectifs, le plan B et une leçon.
+- **📍 Le coach** (automatique) : quand le prix entre dans une zone forte (★★★ et plus), le bot te dit
+  « si ça rejette → achat probable, si ça casse → risque de vente, attends la confirmation ». À la clôture 15 min
+  qui confirme, il envoie un **SIGNAL noté /100** (force de la zone, tendance, sentiment, sweep, gamma, news)
+  avec entrée, stop, objectif et l'avis du prof. Une grosse annonce proche bloque le signal (🚫).
+- **Liquidité** : sommets / creux égaux, haut / bas des séances d'Asie et de Londres ; **sweep** = mèche au-delà
+  puis clôture de retour (stops pris).
+- **Gros mouvement / crash** : Claude cherche sur le web la vraie cause (ex. Microsoft qui plonge après ses
+  résultats) et le bot montre les grosses entreprises du Nasdaq qui bougent fort.
+
 ## 🖥️ MetaTrader 5 : zones toujours à jour, sans rien copier
 
 Quand le bot tourne sur le même ordinateur que MetaTrader 5 :

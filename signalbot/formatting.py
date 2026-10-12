@@ -357,3 +357,50 @@ def market_take_message(t: MarketTake, sources: list[NewsItem]) -> str:
     if sources:
         lines.append("🔗 " + " · ".join(f"<a href=\"{attr(n.link)}\">{e(n.source)}</a>" for n in sources))
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ coach des zones
+
+def zone_touch_message(inst: Instrument, zone, price: float, news_soon: str | None,
+                       sweeps: list | None = None) -> str:
+    buy = zone.side == "ACHAT"
+    icon = "🟢" if buy else "🔴"
+    lines = [f"📍 <b>{e(inst.name)} est dans une zone {zone.side} {'★' * min(zone.force, 5)}</b>",
+             f"Zone <b>{zone.low:,.2f} – {zone.high:,.2f}</b> · prix {price:,.2f}",
+             f"Pourquoi c'est une zone : {e(', '.join(zone.reasons))}", ""]
+    if buy:
+        lines += [f"{icon} Si ça <b>rejette</b> (clôture 15 min au-dessus de {zone.high:,.2f}) → <b>achat probable</b>",
+                  f"🔴 Si ça <b>casse</b> (clôture 15 min sous {zone.low:,.2f}) → risque de <b>vente</b>"]
+    else:
+        lines += [f"{icon} Si ça <b>rejette</b> (clôture 15 min sous {zone.low:,.2f}) → <b>vente probable</b>",
+                  f"🟢 Si ça <b>casse</b> (clôture 15 min au-dessus de {zone.high:,.2f}) → risque d'<b>achat</b>"]
+    for sw in sweeps or []:
+        lines.append(f"🧹 Sweep : {e(sw.level.label)} {sw.level.price:,.2f} dépassé puis repris "
+                     f"→ {'plutôt haussier' if sw.bullish else 'plutôt baissier'}")
+    if news_soon:
+        lines += ["", f"🚫 <b>{e(news_soon)} : ne trade pas avant la news.</b>"]
+    lines += ["", "⏳ <b>Attends la confirmation</b>, je te le dis dès qu'elle arrive (avec un score /100)."]
+    return "\n".join(lines)
+
+
+def setup_message(s, inst: Instrument, coach_text: str | None = None, min_score: int = 70) -> str:
+    buy = s.direction == "ACHAT"
+    icon = "🟢" if buy else "🔴"
+    what = "REJET" if s.kind == "rejet" else "CASSURE"
+    if s.score < min_score:
+        head = f"⚪ <b>{e(inst.name)} : {what} de la zone, mais confirmation faible ({s.score}/100)</b>"
+    else:
+        head = f"{icon} <b>SIGNAL {s.direction} {s.score}/100 — {e(inst.name)}</b> ({what} de la zone)"
+    lines = [head, "",
+             f"Entrée ≈ <b>{s.entry:,.2f}</b>",
+             f"Stop : {s.stop:,.2f}  (risque {abs(s.entry - s.stop):,.2f})",
+             f"Objectif : {s.target:,.2f}  (R/R {s.rr:.1f})", "", "<b>Pourquoi :</b>",
+             *[f"• {e(r)}" for r in s.reasons]]
+    if s.warnings:
+        lines += ["", "<b>Attention :</b>", *[f"⚠️ {e(w)}" for w in s.warnings]]
+    if s.score < min_score:
+        lines += ["", "👉 Je ne la prendrais pas : attends un meilleur setup."]
+    if coach_text:
+        lines += ["", "🎓 <b>L'avis du prof</b>", e(coach_text)]
+    lines += ["", DISCLAIMER]
+    return "\n".join(lines)

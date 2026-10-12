@@ -7,6 +7,8 @@ import dataclasses
 import io
 import functools
 import logging
+
+import pandas as pd
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
@@ -16,12 +18,13 @@ from telegram.constants import ParseMode
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
                           MessageHandler, filters)
 
-from . import ai, chart, data, formatting as fmt, mt5, sentiment as sent, zones as zn
+from . import ai, chart, coach, data, formatting as fmt, liquidity as liq, mt5, sentiment as sent, zones as zn
 from .config import INSTRUMENTS, Instrument, save_env, settings
-from .analysis import (MarketInput, analyze as ai_analyze, build_prompt, compact_context, event_preview,
-                       event_release, trade_review)
+from .analysis import (MarketInput, analyze as ai_analyze, best_trade, build_prompt, compact_context,
+                       event_preview, event_release, trade_review, zone_coach)
+from .indicators import atr as ind_atr
 from .levels import Level, manual_levels, parse_manual, pro_levels
-from .moves import cross_market_context, current_move, detect_move, explain
+from .moves import cross_market_context, current_move, detect_move, explain, megacap_movers
 from .news import NewsItem, events_between, fetch_calendar, fetch_news, relevant_news
 from .news_explain import NewsExplanation, digest as news_digest, explain as explain_news, market_take
 from .positioning import (SOURCES, myfxbook_enabled, positioning, refresh_gamma, reset_myfxbook,
@@ -43,6 +46,7 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 👇 Le plus simple : utilise les <b>boutons en bas</b> (ou /menu pour les réafficher).
 
 <b>Marché</b>
+/prof — 🎓 le prof analyse TOUT (zones, liquidité, gamma, Myfxbook, macro, news) : meilleur trade ou pas de trade
 /analyse — 🧠 l'IA filtre tout et te dit ce qui se trame : biais, scénarios, zones, invalidation
 /zones — 🗺️ graphique Nasdaq + or avec les zones ACHAT / VENTE et leur force
 /meta — 🖥️ indicateur MetaTrader : zones + sentiment à jour toutes seules
@@ -67,6 +71,7 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 /watchlist — liste suivie · /ajouter TICKER · /retirer TICKER
 
 <b>Automatique (mode calme)</b>
+📍 Coach : quand le prix entre dans une zone forte, je te dis quoi attendre, puis SIGNAL noté /100 à la confirmation
 🗺️ Graphiques des zones Nasdaq + or (avec le sentiment acheteur / vendeur) à {zones}, après chaque grosse annonce et chaque gros mouvement
 🖥️ MetaTrader : zones + sentiment mis à jour chaque minute (indicateur « SignalBot_Zones »)
 ☀️ Brief chaque matin ({brief}) : l'analyse IA complète
@@ -95,9 +100,11 @@ BTN_WATCHLIST = "👀 Watchlist"
 BTN_AIDE = "ℹ️ Aide"
 BTN_ZONES = "🗺️ Zones (graphique)"
 BTN_META = "🖥️ MetaTrader"
+BTN_PROF = "🎓 Le prof : meilleur trade maintenant"
 
 MAIN_MENU = ReplyKeyboardMarkup(
-    [[BTN_ANALYSE],
+    [[BTN_PROF],
+     [BTN_ANALYSE],
      [BTN_ZONES],
      [BTN_MARCHE, BTN_NIVEAUX],
      [BTN_SIGNAUX, BTN_POURQUOI],
@@ -130,6 +137,7 @@ BOT_COMMANDS = [
     BotCommand("etat", "🔧 Ce qui est configuré (clé Claude, Myfxbook…)"),
     BotCommand("cle", "🔑 Enregistrer ta clé Claude (ex. /cle sk-ant-...)"),
     BotCommand("myfxbook", "👥 Enregistrer ton compte Myfxbook"),
+    BotCommand("prof", "🎓 Le prof : meilleur trade maintenant (tout analysé)"),
     BotCommand("analyse", "🧠 Analyse IA : ce qui se trame sur NQ et l'or"),
     BotCommand("zones", "🗺️ Graphique avec les zones ACHAT / VENTE (NQ + or)"),
     BotCommand("meta", "🖥️ Indicateur MetaTrader 5 (zones à jour toutes seules)"),
@@ -486,11 +494,13 @@ async def _niveaux_text() -> str:
 
 def _market_inputs() -> list[MarketInput]:
     out = []
-    for key, inst in INSTRUMENTS.items():
-        _, regimes = _analyze(inst)
-        pos = positioning(key)
-        price, levels = _all_levels(key, pos)
-        out.append(MarketInput(key, price, regimes, levels, pos))
+    for key in INSTRUMENTS:
+        snap = _snapshot(key)
+        out.append(MarketInput(key, snap.price, snap.regimes, snap.levels, snap.pos, snap.extra_for_ai()))
+    movers = megacap_movers()
+    if movers and out:
+        out[0].extra += ("\nGrosses entreprises du Nasdaq qui bougent fort (60 min) : "
+                         + " | ".join(f"{n} {c:+.2f}%" for n, _, c in movers))
     return out
 
 
@@ -519,6 +529,25 @@ async def _trade_review(update: Update, idea: str) -> None:
     answer = await trade_review(prompt)
     await reply(update, ("💬 <b>Ton trade</b> : <i>" + fmt.e(idea) + "</i>\n\n" + fmt.e(answer)
                          if answer else "Désolé, l'analyse n'a pas fonctionné. Réessaie dans un instant.")
+                + "\n\n" + fmt.DISCLAIMER)
+
+
+PROF_ASK = ("Analyse TOUT (zones gamma et de liquidité, sweeps, type de marché, sentiment Myfxbook / COT, "
+            "macro, taux, news et annonces à venir, grosses entreprises) et dis-moi la meilleure façon de "
+            "prendre un trade maintenant sur le Nasdaq et sur l'or — ou s'il vaut mieux ne pas trader.")
+
+
+@restricted
+async def cmd_prof(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not ai.enabled():
+        await reply(update, "🎓 Le prof a besoin de ta clé Claude : tape <code>/cle sk-ant-...</code>")
+        return
+    await update.effective_chat.send_message("🎓 Le prof analyse tout (zones, liquidité, Myfxbook, macro, "
+                                             "news)… ça prend environ une minute.")
+    prompt, _ = await _context_prompt(PROF_ASK)
+    text = await best_trade(prompt)
+    await reply(update, "🎓 <b>Le prof : meilleur trade maintenant</b>\n\n"
+                + (fmt.e(text) if text else "Désolé, l'IA n'a pas répondu. Réessaie dans une minute.")
                 + "\n\n" + fmt.DISCLAIMER)
 
 
@@ -608,6 +637,7 @@ def _zone_levels(key: str, pos=None) -> tuple[float | None, list[Level]]:
     price, levels = _all_levels(key, pos)
     levels = levels + zn.last_week_levels(data.history(INSTRUMENTS[key].ticker, "1mo", "1d", ttl=900))
     levels += zn.plan_to_levels(_fresh_plan(key).get("plan_levels", []))
+    levels += liq.liquidity_levels(data.intraday(INSTRUMENTS[key].ticker))
     return price, levels
 
 
@@ -618,15 +648,29 @@ class Snapshot:
     price: float | None
     zones: list
     sentiment: sent.Sentiment
+    levels: list = dataclasses.field(default_factory=list)
+    regimes: dict = dataclasses.field(default_factory=dict)
+    sweeps: list = dataclasses.field(default_factory=list)
+
+    def extra_for_ai(self) -> str:
+        rows = [f"{z.side} {z.low}-{z.high} force {z.force} ({', '.join(z.reasons)})" for z in self.zones]
+        out = ["Zones (niveaux regroupés, force = nombre de raisons) : " + (" | ".join(rows) or "aucune"),
+               f"Sentiment global : {self.sentiment.short()} — " + "; ".join(r[2:] for r in self.sentiment.reasons)]
+        if self.sweeps:
+            out.append("Sweeps récents (5 min) : " + " | ".join(
+                f"{s.level.label} {s.level.price} dépassé jusqu'à {s.extreme} puis repris "
+                f"({'haussier' if s.bullish else 'baissier'})" for s in self.sweeps))
+        return "\n".join(out)
 
 
 def _snapshot(key: str) -> Snapshot:
-    """Tout ce qu'on sait d'un marché : zones (gamma, hier, semaine, IA…) + sentiment acheteur / vendeur."""
+    """Tout ce qu'on sait d'un marché : zones (gamma, liquidité, hier, semaine, IA…), sweeps, sentiment."""
     pos = positioning(key)
     price, levels = _zone_levels(key, pos)
     _, regimes = _analyze(INSTRUMENTS[key])
     st = sent.compute(price, levels, pos, regimes, _fresh_plan(key).get("bias"))
-    return Snapshot(key, pos, price, zn.build(key, price, levels), st)
+    sweeps = liq.find_sweeps(data.intraday(INSTRUMENTS[key].ticker), levels)
+    return Snapshot(key, pos, price, zn.build(key, price, levels), st, levels, regimes, sweeps)
 
 
 def _zones_caption(key: str, price: float | None, zones: list, pos, events: list, offset: float,
@@ -733,6 +777,87 @@ def _tv_line_if_changed() -> str | None:
     state.data["tv_line_sent"] = line
     state.save()
     return line if old else None  # la toute première fois : on retient seulement
+
+
+def _news_soon(minutes: int | None = None) -> str | None:
+    """« CPI m/m à 08:30 » si une grosse annonce sort bientôt (ou vient de sortir)."""
+    now = datetime.now(timezone.utc)
+    evs = events_between(fetch_calendar(), now - timedelta(minutes=10),
+                         now + timedelta(minutes=minutes or settings.no_trade_minutes))
+    if not evs:
+        return None
+    ev = evs[0]
+    return f"{ev.title} à {ev.time.astimezone(settings.timezone):%H:%M}"
+
+
+COACH_WATCH = 3 * 3600  # on suit une zone touchée pendant 3 h au maximum
+
+
+def _coach_step(key: str) -> tuple[str | None, object | None]:
+    """Une vérification du coach pour un marché. Retourne (message, setup éventuel)."""
+    inst = INSTRUMENTS[key]
+    if not data.is_fresh(inst.ticker):
+        return None, None
+    snap = _snapshot(key)
+    if not snap.price:
+        return None, None
+    watches = state.data.setdefault("coach", {})
+    now = datetime.now(timezone.utc).timestamp()
+    w = watches.get(key)
+    if w and now - w["ts"] > COACH_WATCH:
+        watches.pop(key)
+        w = None
+    if w is None:
+        z = coach.zone_hit(snap.zones, snap.price, settings.coach_min_force)
+        if not z:
+            return None, None
+        ck = f"coach:{key}:{round(z.mid)}"
+        if state.cooling_down(ck, 4 * 3600):
+            return None, None
+        state.touch(ck)
+        watches[key] = {"ts": now, "side": z.side, "low": z.low, "high": z.high, "force": z.force,
+                        "reasons": z.reasons}
+        state.save()
+        return fmt.zone_touch_message(inst, z, snap.price, _news_soon(), snap.sweeps), None
+
+    zone = zn.Zone(w["low"], w["high"], w["side"], w["reasons"], w["force"])
+    df15 = coach.to_15m(data.intraday(inst.ticker))
+    if len(df15) < 15:
+        return None, None
+    atr15 = float(ind_atr(df15).iloc[-1])
+    since = pd.Timestamp(w["ts"], unit="s", tz="UTC")
+    kind = coach.confirmation(zone, df15, since, atr15)
+    if not kind:
+        return None, None
+    watches.pop(key)
+    state.save()
+    g = snap.pos.gamma if snap.pos else None
+    setup = coach.build_setup(key, zone, kind, df15, since, atr15, snap.zones, snap.regimes, snap.sentiment,
+                              snap.sweeps, g.positive if g else None, _news_soon())
+    return None, setup
+
+
+async def job_coach(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not settings.coach_alerts:
+        return
+    for key, inst in INSTRUMENTS.items():
+        try:
+            text, setup = await asyncio.to_thread(_coach_step, key)
+        except Exception:
+            log.exception("Coach %s", key)
+            continue
+        if text:
+            await broadcast(context, text)
+        if setup:
+            advice = None
+            if ai.enabled() and setup.score >= settings.coach_min_score:
+                prompt, _ = await _context_prompt(
+                    f"Le bot vient de détecter sur {inst.name} : {setup.kind} de la zone {setup.zone.side} "
+                    f"{setup.zone.low}-{setup.zone.high} ({', '.join(setup.zone.reasons)}). Signal {setup.direction} "
+                    f"{setup.score}/100, entrée {setup.entry}, stop {setup.stop}, objectif {setup.target}. "
+                    f"Raisons : {'; '.join(setup.reasons)}. Attention : {'; '.join(setup.warnings) or 'rien'}.")
+                advice = await zone_coach(prompt)
+            await broadcast(context, fmt.setup_message(setup, inst, advice, settings.coach_min_score))
 
 
 async def job_zones(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1005,7 +1130,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         BTN_MARCHE: cmd_marche, BTN_SIGNAUX: cmd_signaux, BTN_NEWS: cmd_news, BTN_RESUME: cmd_resume,
         BTN_NIVEAUX: cmd_niveaux, BTN_ANALYSE: cmd_analyse, BTN_TV: cmd_chart,
         BTN_CALENDRIER: cmd_calendrier, BTN_BRIEF: cmd_brief, BTN_STOCKS: cmd_stocks,
-        BTN_AIDE: cmd_help, BTN_ZONES: cmd_zones, BTN_META: cmd_meta,
+        BTN_AIDE: cmd_help, BTN_ZONES: cmd_zones, BTN_META: cmd_meta, BTN_PROF: cmd_prof,
     }
     if text in actions:
         context.user_data.pop("await", None)
@@ -1291,7 +1416,9 @@ async def _event_preview_text(evs: list, minutes: int) -> str:
     tz = settings.timezone
     head = (f"⏰ <b>Dans {minutes} min ({evs[0].time.astimezone(tz):%H:%M}) : "
             f"{fmt.e(' + '.join(ev.title for ev in evs))}</b>\n"
-            + "\n".join(fmt.event_line(ev, tz) for ev in evs))
+            + "\n".join(fmt.event_line(ev, tz) for ev in evs)
+            + f"\n🚫 <b>Pas de nouveau trade jusqu'à {(evs[0].time + timedelta(minutes=15)).astimezone(tz):%H:%M}</b> "
+              "(spreads larges, faux départs). Protège tes positions ouvertes.")
     text = None
     if ai.enabled():
         desc = "; ".join(f"{ev.title} (prévu {ev.forecast}, précédent {ev.previous})" for ev in evs)
@@ -1384,7 +1511,7 @@ def build_app() -> Application:
                      ("menu", cmd_menu),
                      ("marche", cmd_marche), ("signaux", cmd_signaux), ("pourquoi", cmd_pourquoi),
                      ("news", cmd_news), ("resume", cmd_resume), ("niveaux", cmd_niveaux),
-                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("zones", cmd_zones), ("meta", cmd_meta), ("mt5", cmd_meta), ("ecart", cmd_ecart), ("trade", cmd_trade), ("cle", cmd_cle), ("myfxbook", cmd_myfxbook), ("etat", cmd_etat), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
+                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("zones", cmd_zones), ("meta", cmd_meta), ("prof", cmd_prof), ("mt5", cmd_meta), ("ecart", cmd_ecart), ("trade", cmd_trade), ("cle", cmd_cle), ("myfxbook", cmd_myfxbook), ("etat", cmd_etat), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
                      ("stock", cmd_stock), ("watchlist", cmd_watchlist), ("ajouter", cmd_ajouter),
                      ("retirer", cmd_retirer), ("brief", cmd_brief)]:
         app.add_handler(CommandHandler(name, fn))
@@ -1396,6 +1523,7 @@ def build_app() -> Application:
     jq.run_repeating(job_signals, interval=settings.signal_check_seconds, first=40)
     jq.run_repeating(job_news, interval=settings.news_check_seconds, first=60)
     jq.run_repeating(job_levels, interval=settings.move_check_seconds, first=90)
+    jq.run_repeating(job_coach, interval=60, first=50)
     jq.run_repeating(job_calendar, interval=settings.calendar_check_seconds, first=30)
     if mt5.files_dir(settings.mt5_files_dir) is not None:
         for path in mt5.install_indicator():

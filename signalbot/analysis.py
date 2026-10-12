@@ -101,6 +101,7 @@ class MarketInput:
     regimes: dict[str, Regime]
     levels: list[Level]
     positioning: Positioning | None
+    extra: str = ""  # zones avec leur force, liquidité, sweeps, sentiment
 
 
 @dataclass
@@ -146,6 +147,8 @@ def build_prompt(inputs: list[MarketInput], news: list[NewsItem], events: list[E
                                                    sorted(m.levels, key=lambda x: x.price)))
         if m.positioning:
             parts.append("Positionnement : " + summary_for_ai([m.positioning]))
+        if m.extra:
+            parts.append(m.extra)
     if context:
         parts.append("\nAutres marchés (variation 60 min) : "
                      + " | ".join(f"{n} {p:.2f} ({c:+.2f} %)" for n, p, c in context))
@@ -246,6 +249,28 @@ objectifs basés sur les niveaux fournis, avec le ratio gain / risque approximat
 • Ce qui invaliderait l'idée et ce qu'il faut surveiller.
 S'il manque une info (sens, prix d'entrée, stop), fais l'analyse quand même et propose des valeurs.
 """ + _TEXT_RULES
+
+
+PROF_SYSTEM = """Tu es le prof de trading d'un trader francophone (Québec) qui trade le Nasdaq 100 (NQ) et l'or (XAUUSD). Il veut LA meilleure façon de prendre un trade maintenant, en tenant compte de TOUT : zones (gamma, liquidité, hier, semaine, profil de volume), sweeps récents, type de marché, sentiment (Myfxbook à contre-courant, COT), macro (taux, Fed, dollar, inflation), news et annonces à venir, autres marchés. Si la recherche web est disponible, vérifie les toutes dernières nouvelles (grosses entreprises du Nasdaq, Fed, géopolitique, tarifs) qui pourraient tout changer.
+Pour CHAQUE marché (Nasdaq puis or), dans cet ordre :
+• Verdict en une ligne : 🟢 ACHAT à surveiller, 🔴 VENTE à surveiller, ou ⛔ PAS DE TRADE (et pourquoi : grosse news proche, marché sans direction, prix au milieu de nulle part…). Note ta conviction /100.
+• Ce qui se passe (2-3 phrases : fondamental, macro, news, positionnement).
+• Le plan : la zone exacte où entrer (tirée des données), la CONFIRMATION à attendre (rejet ou cassure à la clôture 15 min, sweep de liquidité…), le stop (de l'autre côté de la zone), 1-2 objectifs (zones suivantes) et le ratio gain / risque.
+• Le plan B : ce qui se passe si la zone casse.
+Termine par « La leçon » : une phrase pour qu'il apprenne quelque chose de la situation.
+N'invente jamais un niveau : chaque prix vient des données.
+""" + _TEXT_RULES
+
+ZONE_COACH_SYSTEM = """Tu es le coach de trading d'un trader francophone (Québec) (Nasdaq 100 et or). Le bot vient de détecter une confirmation sur une zone (rejet ou cassure) et a calculé un score. En 3-4 phrases courtes : est-ce que tu prendrais ce trade et pourquoi (contexte, news, macro, sentiment), ce qui pourrait mal tourner, et comment le gérer (stop au prix d'entrée quand…). N'invente aucun prix.
+""" + _TEXT_RULES
+
+
+async def best_trade(prompt: str) -> str | None:
+    return await ai.ask(prompt, web_search=True, system=PROF_SYSTEM, effort="high")
+
+
+async def zone_coach(prompt: str) -> str | None:
+    return await ai.ask(prompt, web_search=False, system=ZONE_COACH_SYSTEM, effort="low")
 
 
 async def event_preview(prompt: str) -> str | None:

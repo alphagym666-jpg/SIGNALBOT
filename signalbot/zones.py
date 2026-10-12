@@ -13,7 +13,7 @@ import pandas as pd
 from .levels import Level
 
 # Poids : les niveaux d'options et ceux de l'IA comptent double
-HEAVY = ("Call wall", "Put wall", "Bascule gamma", "SpotGamma", "IA")
+HEAVY = ("Call wall", "Put wall", "Bascule gamma", "SpotGamma", "IA", "Liquidité")
 # Écart max entre deux niveaux pour les mettre dans la même zone (en % du prix)
 MERGE_PCT = {"NQ": 0.0018, "XAU": 0.0025}
 

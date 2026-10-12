@@ -180,6 +180,12 @@ class Settings:
     zones_after_news: bool = _env("ZONES_AFTER_NEWS", "1") not in ("0", "false", "no")
     # 1 = renvoyer les graphiques des zones (gamma recalculé) après chaque gros mouvement
     zones_after_moves: bool = _env("ZONES_AFTER_MOVES", "1") not in ("0", "false", "no")
+    # Coach des zones : message quand le prix entre dans une zone forte, puis signal /100 à la confirmation
+    coach_alerts: bool = _env("COACH_ALERTS", "1") not in ("0", "false", "no")
+    coach_min_force: int = _env_int("COACH_MIN_FORCE", 3)  # force (★) minimale de la zone
+    coach_min_score: int = _env_int("COACH_MIN_SCORE", 70)  # score minimal pour un vrai signal
+    # Pas de nouveau trade X minutes avant une grosse annonce
+    no_trade_minutes: int = _env_int("NO_TRADE_MINUTES", 30)
     # Dossier commun de MetaTrader 5 (vide = trouvé tout seul sous Windows)
     mt5_files_dir: str = _env("MT5_FILES_DIR", "")
     # 1 = rapport actions une fois par semaine (dimanche), 0 = chaque jour de semaine

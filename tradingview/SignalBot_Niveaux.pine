@@ -43,6 +43,7 @@ autoImpulse = input.bool(true, "Départs de gros mouvements (offre / demande)", 
 impulseMult = input.float(2.0, "Gros mouvement = bougie plus grande que X fois l'ATR", minval=1.0, step=0.25, group=grpAuto)
 autoPivots = input.bool(true, "Sommets / creux récents", group=grpAuto)
 pivotLen = input.int(10, "Force des sommets / creux (bougies de chaque côté)", minval=3, group=grpAuto)
+showSweeps = input.bool(true, "Sweeps de liquidité (mèche au-delà d'un sommet / creux puis retour)", group=grpAuto)
 autoRound = input.bool(true, "Chiffres ronds (là où s'accumulent les options)", group=grpAuto)
 staleDays = input.int(3, "Ignorer la ligne du bot si elle a plus de X jours", minval=1, group=grpBot)
 
@@ -100,7 +101,7 @@ shortName(string name) =>
 // murs gamma, bascule, SpotGamma et zones IA comptent double
 zoneWeight(string name) =>
     u = str.upper(name)
-    str.contains(u, "WALL") or str.contains(u, "BASCULE") or str.contains(u, "SPOTGAMMA") or str.contains(u, " SG") or str.contains(u, " IA") or str.contains(u, "MOUVEMENT") ? 2 : 1
+    str.contains(u, "WALL") or str.contains(u, "BASCULE") or str.contains(u, "SPOTGAMMA") or str.contains(u, " SG") or str.contains(u, " IA") or str.contains(u, "MOUVEMENT") or str.contains(u, "LIQUIDIT") ? 2 : 1
 
 drawZone(array<box> bxs, array<label> lbs, float lo, float hi, int f, string txt, bool buy, int left, int ext) =>
     col = buy ? color.green : color.red
@@ -232,6 +233,25 @@ if array.size(pivP) > 8
     array.shift(pivP)
     array.shift(pivN)
 
+// Sweep : le prix dépasse le dernier sommet (ou creux) puis clôture de retour : stops pris,
+// le mouvement repart souvent dans l'autre sens.
+var float lastPH = na
+var float lastPL = na
+if not na(phV)
+    lastPH := phV
+if not na(plV)
+    lastPL := plV
+sweepHigh = showSweeps and not na(lastPH) and high > lastPH and close < lastPH
+sweepLow = showSweeps and not na(lastPL) and low < lastPL and close > lastPL
+plotshape(sweepHigh, "Sweep du haut (baissier)", shape.xcross, location.abovebar, color.new(color.orange, 0), size=size.small, text="Sweep")
+plotshape(sweepLow, "Sweep du bas (haussier)", shape.xcross, location.belowbar, color.new(color.aqua, 0), size=size.small, text="Sweep")
+alertcondition(sweepHigh, "SignalBot : sweep du haut", "SignalBot : sweep de liquidité au-dessus sur {{ticker}} ({{close}}) : attention retour baissier")
+alertcondition(sweepLow, "SignalBot : sweep du bas", "SignalBot : sweep de liquidité en dessous sur {{ticker}} ({{close}}) : attention retour haussier")
+if sweepHigh
+    lastPH := na
+if sweepLow
+    lastPL := na
+
 // ------------------------------------------------------------------ niveaux du bot (/tv)
 var array<line> drawnLines = array.new<line>()
 var array<label> drawnLabels = array.new<label>()
@@ -293,6 +313,8 @@ if barstate.islast
 
     // ---------- zones : on regroupe les niveaux proches, chaque raison ajoute de la force
     if styleIn != "Lignes"
+        tolPct = mergeIn > 0 ? mergeIn : mkt == "XAU" ? 0.25 : 0.18
+        tol = close * tolPct / 100
         zP = array.copy(lvPrices)
         zN = array.copy(lvNames)
         if zoneLive
@@ -323,16 +345,21 @@ if barstate.islast
                 array.push(zN, array.get(impN, i))
         if array.size(pivP) > 0
             for i = 0 to array.size(pivP) - 1
-                array.push(zP, array.get(pivP, i))
-                array.push(zN, array.get(pivN, i))
+                pv = array.get(pivP, i)
+                nmP = array.get(pivN, i)
+                // deux sommets (ou creux) presque au même prix = stops empilés = liquidité
+                twin = false
+                for j = 0 to array.size(pivP) - 1
+                    if j != i and array.get(pivN, j) == nmP and math.abs(array.get(pivP, j) - pv) <= tol * 0.5
+                        twin := true
+                array.push(zP, pv)
+                array.push(zN, twin ? (nmP == "Sommet récent" ? "Liquidité : sommets égaux" : "Liquidité : creux égaux") : nmP)
         if autoRound
             stepR = mkt == "XAU" ? 50.0 : 250.0
             baseR = math.floor(close / stepR) * stepR
             for j = -1 to 2
                 array.push(zP, baseR + j * stepR)
                 array.push(zN, "Chiffre rond")
-        tolPct = mergeIn > 0 ? mergeIn : mkt == "XAU" ? 0.25 : 0.18
-        tol = close * tolPct / 100
         gLo = array.new<float>()
         gHi = array.new<float>()
         gF = array.new<int>()

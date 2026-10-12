@@ -70,6 +70,20 @@ def cross_market_context() -> list[tuple[str, float, float]]:
     return out
 
 
+MEGACAPS = {"Microsoft": "MSFT", "Apple": "AAPL", "Nvidia": "NVDA", "Amazon": "AMZN", "Meta": "META",
+            "Alphabet": "GOOGL", "Tesla": "TSLA", "Broadcom": "AVGO", "Netflix": "NFLX", "AMD": "AMD"}
+
+
+def megacap_movers(min_pct: float = 1.0, minutes: int = 60) -> list[tuple[str, float, float]]:
+    """Grosses entreprises du Nasdaq qui bougent fort (ex. Microsoft -4 % après ses résultats)."""
+    out = []
+    for name, ticker in MEGACAPS.items():
+        ch = data.last_change(ticker, minutes)
+        if ch and abs(ch[1]) >= min_pct:
+            out.append((name, ch[0], ch[1]))
+    return sorted(out, key=lambda x: -abs(x[2]))
+
+
 def _rule_based_reasons(move: Move, context: list[tuple[str, float, float]],
                         events: list[EconEvent], headlines: list[NewsItem]) -> list[str]:
     reasons = []
@@ -107,11 +121,12 @@ async def explain(move: Move, alert: bool = True) -> str:
     """Construit le message Telegram (HTML) expliquant le mouvement."""
     inst = move.instrument
     now = datetime.now(timezone.utc)
-    news_items, events, context, pos = await asyncio.gather(
+    news_items, events, context, pos, movers = await asyncio.gather(
         asyncio.to_thread(fetch_news, 6),
         asyncio.to_thread(fetch_calendar),
         asyncio.to_thread(cross_market_context),
         asyncio.to_thread(positioning, inst.key),
+        asyncio.to_thread(megacap_movers, 1.0, 120),
     )
     headlines = relevant_news(news_items, inst.key, since=now - timedelta(hours=3))[:6]
     recent_events = events_between(events, now - timedelta(minutes=90), now + timedelta(minutes=5))
@@ -140,13 +155,17 @@ async def explain(move: Move, alert: bool = True) -> str:
         f"Contexte inter-marchés (variation 60 min) : {ctx_line or 'indisponible'}\n\n"
         f"Annonces économiques US à fort impact dans la dernière heure et demie :\n{events_txt}\n\n"
         f"Titres de news récents (peuvent être incomplets) :\n{headline_txt}\n\n"
+        f"Grosses entreprises du Nasdaq qui bougent fort (2 h) : "
+        f"{' | '.join(f'{n} {c:+.2f}%' for n, _, c in movers) or 'aucune'}\n\n"
         f"Niveaux clés et positionnement :\n{summary_for_ai([pos])}\n\n"
-        "Explique-moi pourquoi le marché bouge comme ça en ce moment, ce que ça veut dire, "
-        "et à quoi faire attention (niveaux gamma où le prix pourrait rebondir ou accélérer). "
-        "Si la recherche web est disponible, vérifie les toutes "
-        "dernières nouvelles pour trouver la vraie cause."
+        "Explique-moi pourquoi le marché bouge comme ça en ce moment. Trouve la VRAIE cause précise "
+        "(ex. : une grosse entreprise qui plonge après ses résultats, un discours de la Fed, une annonce, "
+        "des tarifs, une nouvelle géopolitique) : utilise la recherche web pour vérifier les toutes "
+        "dernières nouvelles et nomme la source. Dis ensuite : est-ce que ça peut continuer, les niveaux "
+        "gamma / zones où le prix pourrait rebondir ou accélérer, et s'il vaut mieux NE PAS trader "
+        "maintenant (volatilité, news en cours)."
     )
-    explanation = await ai.ask(prompt)
+    explanation = await ai.ask(prompt, web_search=True)
     if explanation:
         lines.append("🧠 <b>Explication</b>")
         lines.append(html.escape(explanation, quote=False))
@@ -159,6 +178,9 @@ async def explain(move: Move, alert: bool = True) -> str:
         lines += ["", "📰 <b>News récentes</b>"]
         lines.extend(f"• <a href=\"{html.escape(n.link)}\">{html.escape(n.title, quote=False)}</a> "
                      f"<i>({html.escape(n.source)})</i>" for n in headlines[:4])
+    if movers:
+        lines += ["", "🏢 <b>Grosses entreprises qui bougent (2 h)</b>",
+                  html.escape(" | ".join(f"{n} {c:+.2f}%" for n, _, c in movers[:5]), quote=False)]
     if context:
         lines += ["", "🌍 <b>Autres marchés (60 min)</b>", html.escape(ctx_line, quote=False)]
     return "\n".join(lines)
