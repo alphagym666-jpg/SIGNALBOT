@@ -176,6 +176,14 @@ def _get_json(url: str, timeout: int = 15) -> dict:
         return json.loads(resp.read().decode())
 
 
+def refresh_gamma(key: str | None = None) -> None:
+    """Oublie les niveaux gamma en cache (après un gros mouvement, les murs changent)."""
+    if key is None:
+        _gamma_cache.clear()
+    else:
+        _gamma_cache.pop(key, None)
+
+
 def reset_myfxbook() -> None:
     """À appeler quand les identifiants changent (commande /myfxbook)."""
     _mfx_session.update(id=None, ts=0.0)

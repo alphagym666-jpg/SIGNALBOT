@@ -178,6 +178,10 @@ class Settings:
         default_factory=lambda: [t.strip() for t in _env("ZONES_TIMES", "08:50,12:30").split(",") if t.strip()])
     # 1 = renvoyer les graphiques des zones juste après chaque grosse annonce
     zones_after_news: bool = _env("ZONES_AFTER_NEWS", "1") not in ("0", "false", "no")
+    # 1 = renvoyer les graphiques des zones (gamma recalculé) après chaque gros mouvement
+    zones_after_moves: bool = _env("ZONES_AFTER_MOVES", "1") not in ("0", "false", "no")
+    # Dossier commun de MetaTrader 5 (vide = trouvé tout seul sous Windows)
+    mt5_files_dir: str = _env("MT5_FILES_DIR", "")
     # 1 = rapport actions une fois par semaine (dimanche), 0 = chaque jour de semaine
     stocks_report_weekly: bool = _env("STOCKS_REPORT_WEEKLY", "1") not in ("0", "false", "no")
 

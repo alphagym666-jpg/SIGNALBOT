@@ -189,6 +189,7 @@ var array<string> lvNames = array.new<string>()
 var string biasTxt = "n/d"
 var string gammaTxt = "n/d"
 var string dateTxt = ""
+var string sentTxt = "n/d"
 
 if barstate.islast
     for ln in drawnLines
@@ -205,6 +206,7 @@ if barstate.islast
     biasTxt := "n/d"
     gammaTxt := "n/d"
     dateTxt := ""
+    sentTxt := "n/d"
     sec = parseSection(str.replace_all(levelsTxt, "\n", ""), mkt)
     if str.length(sec) > 0
         for item in str.split(sec, ";")
@@ -212,6 +214,8 @@ if barstate.islast
                 biasTxt := str.substring(item, 5)
             else if str.startswith(item, "GAMMA=")
                 gammaTxt := str.substring(item, 6)
+            else if str.startswith(item, "SENT=")
+                sentTxt := str.substring(item, 5)
             else if str.startswith(item, "DATE=")
                 dateTxt := str.substring(item, 5)
             else
@@ -318,7 +322,7 @@ if barstate.isrealtime and barstate.isconfirmed and array.size(lvPrices) > 0
             alert("SignalBot : " + syminfo.ticker + " croise " + array.get(lvNames, i) + " (" + str.tostring(lv, format.mintick) + ")", alert.freq_once_per_bar_close)
 
 // ------------------------------------------------------------------ tableau
-var table tb = table.new(position.top_right, 2, 7, bgcolor=color.new(color.black, 25), border_width=1)
+var table tb = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 25), border_width=1)
 if showTable and barstate.islast
     table.cell(tb, 0, 0, "SignalBot " + (mkt == "" ? "?" : mkt), text_color=color.white, text_size=size.small)
     table.cell(tb, 1, 0, mkt == "" ? "marché non reconnu : choisis-le dans « Marché »" : dateTxt == "" ? "tape /chart dans Telegram" : "niveaux du " + dateTxt, text_color=mkt == "" ? color.orange : color.silver, text_size=size.small)
@@ -332,5 +336,7 @@ if showTable and barstate.islast
     table.cell(tb, 1, 4, biasTxt, text_color=biasTxt == "haussier" ? color.lime : biasTxt == "baissier" ? color.red : color.silver, text_size=size.small)
     table.cell(tb, 0, 5, "Gamma des options", text_color=color.silver, text_size=size.small)
     table.cell(tb, 1, 5, gammaTxt == "positif" ? "positif (marché amorti)" : gammaTxt == "négatif" ? "négatif (mouvements amplifiés)" : gammaTxt, text_color=gammaTxt == "positif" ? color.lime : gammaTxt == "négatif" ? color.red : color.silver, text_size=size.small)
+    table.cell(tb, 0, 7, "Sentiment (Myfxbook, COT…)", text_color=color.silver, text_size=size.small)
+    table.cell(tb, 1, 7, sentTxt, text_color=str.contains(str.upper(sentTxt), "ACHETEUR") ? color.lime : str.contains(str.upper(sentTxt), "VENDEUR") ? color.red : color.silver, text_size=size.small)
     table.cell(tb, 0, 6, "Prix vs VWAP", text_color=color.silver, text_size=size.small)
     table.cell(tb, 1, 6, close > vwapV ? "au-dessus (acheteurs)" : "en dessous (vendeurs)", text_color=close > vwapV ? color.lime : color.red, text_size=size.small)

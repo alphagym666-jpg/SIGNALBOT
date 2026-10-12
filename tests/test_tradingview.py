@@ -12,7 +12,7 @@ def _pine_parse(line: str, key: str):
             sec = part[len(key) + 1:]
     meta, levels = {}, []
     for item in sec.split(";") if sec else []:
-        if "=" in item and item.split("=")[0] in ("BIAS", "GAMMA", "DATE"):
+        if "=" in item and item.split("=")[0] in ("BIAS", "GAMMA", "DATE", "SENT"):
             k, v = item.split("=", 1)
             meta[k] = v
         else:

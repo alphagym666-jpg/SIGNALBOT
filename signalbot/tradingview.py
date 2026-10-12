@@ -32,8 +32,10 @@ def clean(text: str) -> str:
 
 
 def section(key: str, levels: list[Level], plan_levels: list[dict], bias: str | None,
-            gamma_positive: bool | None, date: str) -> str:
+            gamma_positive: bool | None, date: str, sentiment: str | None = None) -> str:
     items = [f"DATE={date}"]
+    if sentiment:
+        items.append(f"SENT={clean(sentiment)}")
     if bias:
         items.append(f"BIAS={clean(bias)}")
     if gamma_positive is not None:

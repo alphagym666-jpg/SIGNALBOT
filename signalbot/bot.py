@@ -8,6 +8,7 @@ import io
 import functools
 import logging
 from datetime import datetime, time, timedelta, timezone
+from pathlib import Path
 
 from telegram import (BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
                       ReplyKeyboardMarkup, Update)
@@ -15,7 +16,7 @@ from telegram.constants import ParseMode
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
                           MessageHandler, filters)
 
-from . import ai, chart, data, formatting as fmt, zones as zn
+from . import ai, chart, data, formatting as fmt, mt5, sentiment as sent, zones as zn
 from .config import INSTRUMENTS, Instrument, save_env, settings
 from .analysis import (MarketInput, analyze as ai_analyze, build_prompt, compact_context, event_preview,
                        event_release, trade_review)
@@ -23,7 +24,8 @@ from .levels import Level, manual_levels, parse_manual, pro_levels
 from .moves import cross_market_context, current_move, detect_move, explain
 from .news import NewsItem, events_between, fetch_calendar, fetch_news, relevant_news
 from .news_explain import NewsExplanation, digest as news_digest, explain as explain_news, market_take
-from .positioning import SOURCES, myfxbook_enabled, positioning, reset_myfxbook, summary_for_ai
+from .positioning import (SOURCES, myfxbook_enabled, positioning, refresh_gamma, reset_myfxbook,
+                          summary_for_ai)
 from .regime import Regime, classify
 from .signals import Signal, evaluate
 from .state import State
@@ -64,7 +66,8 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 /watchlist — liste suivie · /ajouter TICKER · /retirer TICKER
 
 <b>Automatique (mode calme)</b>
-🗺️ Graphiques des zones Nasdaq + or à {zones} et après chaque grosse annonce
+🗺️ Graphiques des zones Nasdaq + or (avec le sentiment acheteur / vendeur) à {zones}, après chaque grosse annonce et chaque gros mouvement
+🖥️ MetaTrader : zones + sentiment mis à jour chaque minute (indicateur « SignalBot_Zones »)
 ☀️ Brief chaque matin ({brief}) : l'analyse IA complète
 🧠 « Ce que j'en pense » : l'IA lit toutes les news et t'écrit SEULEMENT quand c'est vraiment
 important (taux, Fed, inflation, géopolitique…) — max {news_per_day} par jour
@@ -546,10 +549,13 @@ def _tv_line() -> str:
     sections = []
     for key in INSTRUMENTS:
         pos = positioning(key)
-        _, levels = _all_levels(key, pos)
+        price, levels = _all_levels(key, pos)
         plan = (last.get("markets", {}).get(key, {}) if fresh else {})
+        _, regimes = _analyze(INSTRUMENTS[key])
+        st = sent.compute(price, levels, pos, regimes, plan.get("bias"))
         sections.append(tv_section(key, levels, plan.get("plan_levels", []), plan.get("bias"),
-                                   pos.gamma.positive if pos.gamma else None, date))
+                                   pos.gamma.positive if pos.gamma else None, date,
+                                   f"{st.label} {st.buyers_pct}%"))
     return build_line(sections)
 
 
@@ -586,20 +592,48 @@ def _broker_offset(key: str) -> float:
     return float(state.data.get("broker_offset", {}).get(key, 0.0))
 
 
+def _fresh_plan(key: str) -> dict:
+    """Plan de l'analyse IA du jour (biais + zones), s'il a moins de 20 h."""
+    last = state.data.get("last_analysis") or {}
+    if datetime.now(timezone.utc).timestamp() - last.get("ts", 0) < 20 * 3600:
+        return last.get("markets", {}).get(key, {})
+    return {}
+
+
 def _zone_levels(key: str, pos=None) -> tuple[float | None, list[Level]]:
     price, levels = _all_levels(key, pos)
     levels = levels + zn.last_week_levels(data.history(INSTRUMENTS[key].ticker, "1mo", "1d", ttl=900))
-    last = state.data.get("last_analysis") or {}
-    if datetime.now(timezone.utc).timestamp() - last.get("ts", 0) < 20 * 3600:
-        levels += zn.plan_to_levels(last.get("markets", {}).get(key, {}).get("plan_levels", []))
+    levels += zn.plan_to_levels(_fresh_plan(key).get("plan_levels", []))
     return price, levels
 
 
-def _zones_caption(key: str, price: float | None, zones: list, pos, events: list, offset: float) -> str:
+@dataclasses.dataclass
+class Snapshot:
+    key: str
+    pos: object
+    price: float | None
+    zones: list
+    sentiment: sent.Sentiment
+
+
+def _snapshot(key: str) -> Snapshot:
+    """Tout ce qu'on sait d'un marché : zones (gamma, hier, semaine, IA…) + sentiment acheteur / vendeur."""
+    pos = positioning(key)
+    price, levels = _zone_levels(key, pos)
+    _, regimes = _analyze(INSTRUMENTS[key])
+    st = sent.compute(price, levels, pos, regimes, _fresh_plan(key).get("bias"))
+    return Snapshot(key, pos, price, zn.build(key, price, levels), st)
+
+
+def _zones_caption(key: str, price: float | None, zones: list, pos, events: list, offset: float,
+                   st: sent.Sentiment | None = None) -> str:
     inst = INSTRUMENTS[key]
     lines = [f"🗺️ <b>{fmt.e(inst.name)}</b>" + (f" · prix <b>{price + offset:,.2f}</b>" if price else "")]
     if offset:
         lines.append(f"<i>Prix MetaTrader (écart {offset:+.2f} avec le contrat à terme)</i>")
+    if st:
+        lines.append(f"<b>Sentiment : {fmt.e(st.short())}</b>")
+        lines += [f"   {fmt.e(r)}" for r in st.reasons[:3]]
     if pos and pos.gamma:
         lines.append("🧲 Gamma " + ("🟢 positif : le prix reste souvent entre les zones" if pos.gamma.positive
                                    else "🔴 négatif : les cassures vont plus loin"))
@@ -625,15 +659,37 @@ def _zones_charts() -> list[tuple[bytes, str]]:
     events = events_between(fetch_calendar(), now, now + timedelta(hours=4))
     out = []
     for key, inst in INSTRUMENTS.items():
-        pos = positioning(key)
-        price, levels = _zone_levels(key, pos)
+        snap = _snapshot(key)
         offset = _broker_offset(key)
-        zones = zn.shift(zn.build(key, price, levels), offset)
+        zones = zn.shift(snap.zones, offset)
         candles = data.history(inst.ticker, "10d", "1h", ttl=240)
-        sub = "Zones = niveaux qui se regroupent (gamma, hier, semaine, profil de volume, IA). ★ = force."
-        png = chart.render(f"{inst.name} · 1 h · zones SignalBot", candles, zones, price, sub, offset)
-        out.append((png, _zones_caption(key, price, zones, pos, events, offset)))
+        sub = (f"Sentiment : {snap.sentiment.label} ({snap.sentiment.buyers_pct} % acheteur). "
+               "Zones = niveaux qui se regroupent (gamma, hier, semaine, profil de volume, IA). ★ = force.")
+        png = chart.render(f"{inst.name} · 1 h · zones SignalBot", candles, zones, snap.price, sub, offset)
+        out.append((png, _zones_caption(key, snap.price, zones, snap.pos, events, offset, snap.sentiment)))
     return out
+
+
+def _write_mt5() -> Path | None:
+    """Met à jour le fichier lu par l'indicateur MetaTrader « SignalBot Zones »."""
+    if mt5.files_dir(settings.mt5_files_dir) is None:
+        return None
+    now = datetime.now(timezone.utc)
+    events = events_between(fetch_calendar(), now - timedelta(minutes=10), now + timedelta(hours=24))
+    snaps = []
+    for key in INSTRUMENTS:
+        s = _snapshot(key)
+        g = s.pos.gamma if s.pos else None
+        snaps.append(mt5.MarketSnapshot(key, s.price, s.zones, s.sentiment,
+                                        ("positif" if g.positive else "négatif") if g else ""))
+    return mt5.write(snaps, events, settings.mt5_files_dir)
+
+
+async def job_mt5(context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        await asyncio.to_thread(_write_mt5)
+    except Exception:
+        log.exception("Mise à jour du fichier MetaTrader impossible")
 
 
 async def _send_zones(bot, chat_id: int, charts: list[tuple[bytes, str]], head: str = "") -> None:
@@ -966,6 +1022,10 @@ async def job_moves(context: ContextTypes.DEFAULT_TYPE) -> None:
         state.touch(key)
         log.info("Gros mouvement %s %+.2f%% (%s)", inst.key, move.change, move.window)
         await broadcast(context, await explain(move), urgent=True)
+        if settings.zones_after_moves:
+            refresh_gamma(inst.key)  # les murs gamma bougent avec le prix : on les recalcule
+            await broadcast_zones(context, f"après le gros mouvement ({inst.name} {move.change:+.2f} %)",
+                                  urgent=True)
     if _news_mode() == "mouvement":  # réaction aux news vérifiée aussi souvent que les gros mouvements
         await _check_pending_news(context)
 
@@ -1285,6 +1345,10 @@ def build_app() -> Application:
     jq.run_repeating(job_news, interval=settings.news_check_seconds, first=60)
     jq.run_repeating(job_levels, interval=settings.move_check_seconds, first=90)
     jq.run_repeating(job_calendar, interval=settings.calendar_check_seconds, first=30)
+    if mt5.files_dir(settings.mt5_files_dir) is not None:
+        for path in mt5.install_indicator():
+            log.info("Indicateur MetaTrader installé : %s", path)
+        jq.run_repeating(job_mt5, interval=60, first=15)
     jq.run_daily(job_brief, time=_parse_time(settings.morning_brief_time), days=WEEKDAYS)
     for t in settings.zones_times:
         jq.run_daily(job_zones, time=_parse_time(t), days=WEEKDAYS)

@@ -109,6 +109,20 @@ Pour recevoir les alertes 24/7, fais tourner le bot sur un serveur toujours allu
 
 ---
 
+## 🖥️ MetaTrader 5 : zones toujours à jour, sans rien copier
+
+Quand le bot tourne sur le même ordinateur que MetaTrader 5 :
+- il copie tout seul l'indicateur **SignalBot_Zones** dans MetaTrader (`MQL5\Indicators`) ;
+- chaque minute, il écrit ses zones, le sentiment et les prochaines news dans le dossier commun de MetaTrader ;
+- l'indicateur relit ce fichier toutes les 30 secondes : zones ACHAT / VENTE avec leur force ★ (gamma recalculé
+  après les gros mouvements), panneau **Sentiment** (Myfxbook, COT, tendance, VWAP, gamma, IA) et ⚠ prochaines news ;
+- les prix sont convertis tout seuls au prix de ton courtier (NAS100, XAUUSD…) ;
+- alerte quand le prix entre dans une zone.
+
+Installation (une seule fois) : relance MetaTrader → Navigateur → Indicateurs → glisse **SignalBot_Zones** sur le
+graphique NAS100 et sur le graphique XAUUSD. S'il n'apparaît pas : clic droit sur « Indicateurs » → Actualiser
+(ou ouvre-le dans MetaEditor et clique sur Compiler).
+
 ## 📺 Indicateur TradingView « SignalBot Niveaux »
 
 Le fichier [`tradingview/SignalBot_Niveaux.pine`](tradingview/SignalBot_Niveaux.pine) affiche sur ton graphique :
