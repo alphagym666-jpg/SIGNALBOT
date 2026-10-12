@@ -5,3 +5,4 @@ numpy>=1.26
 feedparser>=6.0
 anthropic>=1.9
 python-dotenv>=1.0
+matplotlib>=3.8

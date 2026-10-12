@@ -173,6 +173,11 @@ class Settings:
     # Heures des rapports quotidiens (heure locale, HH:MM)
     morning_brief_time: str = _env("MORNING_BRIEF_TIME", "08:45")
     stocks_report_time: str = _env("STOCKS_REPORT_TIME", "17:15")
+    # Graphiques des zones (Nasdaq + or) envoyés automatiquement à ces heures (jours de semaine)
+    zones_times: list[str] = field(
+        default_factory=lambda: [t.strip() for t in _env("ZONES_TIMES", "08:50,12:30").split(",") if t.strip()])
+    # 1 = renvoyer les graphiques des zones juste après chaque grosse annonce
+    zones_after_news: bool = _env("ZONES_AFTER_NEWS", "1") not in ("0", "false", "no")
     # 1 = rapport actions une fois par semaine (dimanche), 0 = chaque jour de semaine
     stocks_report_weekly: bool = _env("STOCKS_REPORT_WEEKLY", "1") not in ("0", "false", "no")
 

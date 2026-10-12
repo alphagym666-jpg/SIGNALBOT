@@ -52,6 +52,8 @@ Après `/start`, un **menu à boutons avec icônes** reste affiché en bas de Te
 | `/analyse` | 🧠 Analyse IA complète : ce qui se trame, scénarios, zones, invalidation |
 | `/sg nq call 25000 put 24000 flip 24500` | Taper tes niveaux SpotGamma du jour (en prix NQ/or ou QQQ/GLD) |
 | `/trade acheter l'or vers 4200 stop 4185` | 💬 L'IA analyse ton idée de trade (verdict, meilleure entrée, stop, objectifs) |
+| `/zones` | 🗺️ Graphique Nasdaq + or avec les zones ACHAT / VENTE, leur force ★ et leurs raisons (aussi envoyé tout seul à 8 h 50, 12 h 30 et après chaque grosse annonce) |
+| `/ecart or 4012.5` | 📐 Met les zones au prix de ton MetaTrader (tape le prix que tu vois là-bas) |
 | `/chart` | 📺 Code TradingView du jour (fichier, niveaux déjà dedans) + ligne rapide à coller |
 | `/niveaux` | Niveaux clés : gamma des options, particuliers, COT |
 | `/resume` | Résumé : le marché penche vers où, et les taux ? |

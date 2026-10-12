@@ -15,7 +15,7 @@ from telegram.constants import ParseMode
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
                           MessageHandler, filters)
 
-from . import ai, data, formatting as fmt
+from . import ai, chart, data, formatting as fmt, zones as zn
 from .config import INSTRUMENTS, Instrument, save_env, settings
 from .analysis import (MarketInput, analyze as ai_analyze, build_prompt, compact_context, event_preview,
                        event_release, trade_review)
@@ -42,6 +42,8 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 
 <b>Marché</b>
 /analyse — 🧠 l'IA filtre tout et te dit ce qui se trame : biais, scénarios, zones, invalidation
+/zones — 🗺️ graphique Nasdaq + or avec les zones ACHAT / VENTE et leur force
+/ecart or 4012.5 — tape le prix de MetaTrader pour que les zones soient à ce prix
 /marche — type de marché (tendance, range, indécis…) pour NQ et l'or
 /signaux — meilleurs setups d'achat/vente du moment
 /pourquoi nq | or — pourquoi le prix bouge en ce moment
@@ -62,6 +64,7 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 /watchlist — liste suivie · /ajouter TICKER · /retirer TICKER
 
 <b>Automatique (mode calme)</b>
+🗺️ Graphiques des zones Nasdaq + or à {zones} et après chaque grosse annonce
 ☀️ Brief chaque matin ({brief}) : l'analyse IA complète
 🧠 « Ce que j'en pense » : l'IA lit toutes les news et t'écrit SEULEMENT quand c'est vraiment
 important (taux, Fed, inflation, géopolitique…) — max {news_per_day} par jour
@@ -86,9 +89,11 @@ BTN_STOCKS = "📈 Opportunités actions"
 BTN_STOCK = "🔎 Analyser une action"
 BTN_WATCHLIST = "👀 Watchlist"
 BTN_AIDE = "ℹ️ Aide"
+BTN_ZONES = "🗺️ Zones (graphique)"
 
 MAIN_MENU = ReplyKeyboardMarkup(
     [[BTN_ANALYSE],
+     [BTN_ZONES],
      [BTN_MARCHE, BTN_NIVEAUX],
      [BTN_SIGNAUX, BTN_POURQUOI],
      [BTN_RESUME, BTN_NEWS],
@@ -120,6 +125,8 @@ BOT_COMMANDS = [
     BotCommand("cle", "🔑 Enregistrer ta clé Claude (ex. /cle sk-ant-...)"),
     BotCommand("myfxbook", "👥 Enregistrer ton compte Myfxbook"),
     BotCommand("analyse", "🧠 Analyse IA : ce qui se trame sur NQ et l'or"),
+    BotCommand("zones", "🗺️ Graphique avec les zones ACHAT / VENTE (NQ + or)"),
+    BotCommand("ecart", "📐 Mettre les zones au prix MetaTrader (ex. /ecart or 4012.5)"),
     BotCommand("marche", "📊 Type de marché (tendance, range…)"),
     BotCommand("signaux", "🎯 Signaux d'achat / vente"),
     BotCommand("resume", "🧭 Résumé : le marché penche vers où ?"),
@@ -254,6 +261,7 @@ def _help_text() -> str:
     return HELP.format(min_score=settings.min_signal_score,
                        reminder=settings.calendar_reminder_minutes,
                        brief=settings.morning_brief_time,
+                       zones=" et ".join(settings.zones_times) or "la demande",
                        news_per_day=settings.news_max_per_day,
                        quiet=settings.quiet_hours.replace("-", " à "),
                        stocks=("le dimanche" if settings.stocks_report_weekly else "chaque soir")
@@ -571,6 +579,128 @@ async def cmd_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply(update, f"<code>{fmt.e(line)}</code>")
 
 
+# ------------------------------------------------------------------ zones (graphique)
+
+def _broker_offset(key: str) -> float:
+    """Écart entre le contrat à terme (NQ=F, GC=F) et le prix MetaTrader, réglé avec /ecart."""
+    return float(state.data.get("broker_offset", {}).get(key, 0.0))
+
+
+def _zone_levels(key: str, pos=None) -> tuple[float | None, list[Level]]:
+    price, levels = _all_levels(key, pos)
+    levels = levels + zn.last_week_levels(data.history(INSTRUMENTS[key].ticker, "1mo", "1d", ttl=900))
+    last = state.data.get("last_analysis") or {}
+    if datetime.now(timezone.utc).timestamp() - last.get("ts", 0) < 20 * 3600:
+        levels += zn.plan_to_levels(last.get("markets", {}).get(key, {}).get("plan_levels", []))
+    return price, levels
+
+
+def _zones_caption(key: str, price: float | None, zones: list, pos, events: list, offset: float) -> str:
+    inst = INSTRUMENTS[key]
+    lines = [f"🗺️ <b>{fmt.e(inst.name)}</b>" + (f" · prix <b>{price + offset:,.2f}</b>" if price else "")]
+    if offset:
+        lines.append(f"<i>Prix MetaTrader (écart {offset:+.2f} avec le contrat à terme)</i>")
+    if pos and pos.gamma:
+        lines.append("🧲 Gamma " + ("🟢 positif : le prix reste souvent entre les zones" if pos.gamma.positive
+                                   else "🔴 négatif : les cassures vont plus loin"))
+    if pos and pos.retail:
+        lines.append(f"👥 Myfxbook : {pos.retail.long_pct:.0f} % acheteurs / {pos.retail.short_pct:.0f} % vendeurs")
+    for ev in events[:3]:
+        lines.append(f"⚠️ <b>News {ev.time.astimezone(settings.timezone):%H:%M}</b> : {fmt.e(ev.title)}")
+    for z in zones:
+        icon = "🟢" if z.side == "ACHAT" else "🔴"
+        row = (f"{icon} {z.side} {'★' * min(z.force, 5)} <b>{z.low:,.2f}–{z.high:,.2f}</b> : "
+               f"{fmt.e(', '.join(z.reasons))}")
+        if len("\n".join(lines + [row])) > 990:  # limite de Telegram pour une légende
+            break
+        lines.append(row)
+    if not zones:
+        lines.append("Pas de zones disponibles pour le moment (données du marché absentes).")
+    return "\n".join(lines)
+
+
+def _zones_charts() -> list[tuple[bytes, str]]:
+    """Une image + légende par marché (Nasdaq et or)."""
+    now = datetime.now(timezone.utc)
+    events = events_between(fetch_calendar(), now, now + timedelta(hours=4))
+    out = []
+    for key, inst in INSTRUMENTS.items():
+        pos = positioning(key)
+        price, levels = _zone_levels(key, pos)
+        offset = _broker_offset(key)
+        zones = zn.shift(zn.build(key, price, levels), offset)
+        candles = data.history(inst.ticker, "10d", "1h", ttl=240)
+        sub = "Zones = niveaux qui se regroupent (gamma, hier, semaine, profil de volume, IA). ★ = force."
+        png = chart.render(f"{inst.name} · 1 h · zones SignalBot", candles, zones, price, sub, offset)
+        out.append((png, _zones_caption(key, price, zones, pos, events, offset)))
+    return out
+
+
+async def _send_zones(bot, chat_id: int, charts: list[tuple[bytes, str]], head: str = "") -> None:
+    for i, (png, caption) in enumerate(charts):
+        if head and i == 0 and len(head) + len(caption) < 1020:
+            caption = head + "\n" + caption
+        await bot.send_photo(chat_id, photo=io.BytesIO(png), caption=caption, parse_mode=ParseMode.HTML)
+
+
+async def broadcast_zones(context: ContextTypes.DEFAULT_TYPE, why: str = "", urgent: bool = False) -> None:
+    if not urgent and in_quiet_hours():
+        return
+    charts = await asyncio.to_thread(_zones_charts)
+    head = f"🗺️ <b>Zones mises à jour</b> {fmt.e(why)}".strip()
+    for chat_id in settings.allowed_chat_ids or state.chats:
+        try:
+            await _send_zones(context.bot, chat_id, charts, head)
+        except Exception:
+            log.exception("Envoi des zones impossible vers %s", chat_id)
+
+
+async def job_zones(context: ContextTypes.DEFAULT_TYPE) -> None:
+    await broadcast_zones(context)
+
+
+@restricted
+async def cmd_zones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_chat.send_message("🗺️ Je dessine tes zones Nasdaq et or…")
+    charts = await asyncio.to_thread(_zones_charts)
+    await _send_zones(update.get_bot(), update.effective_chat.id, charts)
+    if not any(_broker_offset(k) for k in INSTRUMENTS):
+        await reply(update, "💡 Les prix sont ceux des contrats à terme (NQ, GC). Pour avoir les zones au "
+                            "prix de ton MetaTrader, tape le prix que tu vois là-bas, ex. :\n"
+                            "<code>/ecart nq 25120</code> et <code>/ecart or 4012.5</code>")
+
+
+@restricted
+async def cmd_ecart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = context.args or []
+    insts = _find_instrument(args[0]) if args else []
+    try:
+        broker = float(args[1].replace(",", ".")) if len(args) > 1 else None
+    except ValueError:
+        broker = None
+    if len(insts) != 1 or broker is None:
+        await reply(update, "📐 Regarde le prix dans MetaTrader en ce moment et tape-le, ex. :\n"
+                            "<code>/ecart nq 25120</code> (NAS100) ou <code>/ecart or 4012.5</code> (XAUUSD)\n"
+                            "<code>/ecart nq 0</code> pour revenir au prix du contrat à terme.")
+        return
+    inst = insts[0]
+    offsets = state.data.setdefault("broker_offset", {})
+    if broker == 0:
+        offsets.pop(inst.key, None)
+        state.save()
+        await reply(update, f"✅ {fmt.e(inst.name)} : zones au prix du contrat à terme.")
+        return
+    price = await asyncio.to_thread(_price, inst)
+    if not price:
+        await reply(update, "❌ Je n'arrive pas à lire le prix du contrat à terme en ce moment. Réessaie plus tard.")
+        return
+    offsets[inst.key] = round(broker - price, 2)
+    state.save()
+    await reply(update, f"✅ {fmt.e(inst.name)} : écart de <b>{broker - price:+.2f}</b> enregistré "
+                        f"(MetaTrader {broker:,.2f} / contrat {price:,.2f}).\nTes zones seront maintenant au prix "
+                        "MetaTrader. Refais-le de temps en temps (l'écart change lentement).")
+
+
 @restricted
 async def cmd_analyse(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.effective_chat.send_message("🧠 Je rassemble tout (news, niveaux, positionnement, "
@@ -767,7 +897,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         BTN_MARCHE: cmd_marche, BTN_SIGNAUX: cmd_signaux, BTN_NEWS: cmd_news, BTN_RESUME: cmd_resume,
         BTN_NIVEAUX: cmd_niveaux, BTN_ANALYSE: cmd_analyse, BTN_TV: cmd_chart,
         BTN_CALENDRIER: cmd_calendrier, BTN_BRIEF: cmd_brief, BTN_STOCKS: cmd_stocks,
-        BTN_AIDE: cmd_help,
+        BTN_AIDE: cmd_help, BTN_ZONES: cmd_zones,
     }
     if text in actions:
         context.user_data.pop("await", None)
@@ -1111,6 +1241,8 @@ async def job_calendar(context: ContextTypes.DEFAULT_TYPE) -> None:
             state.mark_seen("calpost:" + ev.id)
         minutes_since = max(1, int((now - evs[0].time).total_seconds() // 60))
         await broadcast(context, await _event_release_text(evs, minutes_since), urgent=True)
+        if settings.zones_after_news:
+            await broadcast_zones(context, f"après {' + '.join(ev.title for ev in evs)}", urgent=True)
 
 
 async def job_brief(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1140,7 +1272,7 @@ def build_app() -> Application:
                      ("menu", cmd_menu),
                      ("marche", cmd_marche), ("signaux", cmd_signaux), ("pourquoi", cmd_pourquoi),
                      ("news", cmd_news), ("resume", cmd_resume), ("niveaux", cmd_niveaux),
-                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("trade", cmd_trade), ("cle", cmd_cle), ("myfxbook", cmd_myfxbook), ("etat", cmd_etat), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
+                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("zones", cmd_zones), ("ecart", cmd_ecart), ("trade", cmd_trade), ("cle", cmd_cle), ("myfxbook", cmd_myfxbook), ("etat", cmd_etat), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
                      ("stock", cmd_stock), ("watchlist", cmd_watchlist), ("ajouter", cmd_ajouter),
                      ("retirer", cmd_retirer), ("brief", cmd_brief)]:
         app.add_handler(CommandHandler(name, fn))
@@ -1154,6 +1286,8 @@ def build_app() -> Application:
     jq.run_repeating(job_levels, interval=settings.move_check_seconds, first=90)
     jq.run_repeating(job_calendar, interval=settings.calendar_check_seconds, first=30)
     jq.run_daily(job_brief, time=_parse_time(settings.morning_brief_time), days=WEEKDAYS)
+    for t in settings.zones_times:
+        jq.run_daily(job_zones, time=_parse_time(t), days=WEEKDAYS)
     for t in settings.digest_times:
         jq.run_daily(job_digest, time=_parse_time(t), days=WEEKDAYS)
     jq.run_daily(job_stocks, time=_parse_time(settings.stocks_report_time),
