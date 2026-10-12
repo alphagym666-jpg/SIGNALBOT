@@ -45,6 +45,7 @@ HELP = """<b>SignalBot — Nasdaq & Or</b>
 <b>Marché</b>
 /analyse — 🧠 l'IA filtre tout et te dit ce qui se trame : biais, scénarios, zones, invalidation
 /zones — 🗺️ graphique Nasdaq + or avec les zones ACHAT / VENTE et leur force
+/meta — 🖥️ indicateur MetaTrader : zones + sentiment à jour toutes seules
 /ecart or 4012.5 — tape le prix de MetaTrader pour que les zones soient à ce prix
 /marche — type de marché (tendance, range, indécis…) pour NQ et l'or
 /signaux — meilleurs setups d'achat/vente du moment
@@ -93,6 +94,7 @@ BTN_STOCK = "🔎 Analyser une action"
 BTN_WATCHLIST = "👀 Watchlist"
 BTN_AIDE = "ℹ️ Aide"
 BTN_ZONES = "🗺️ Zones (graphique)"
+BTN_META = "🖥️ MetaTrader"
 
 MAIN_MENU = ReplyKeyboardMarkup(
     [[BTN_ANALYSE],
@@ -102,7 +104,8 @@ MAIN_MENU = ReplyKeyboardMarkup(
      [BTN_RESUME, BTN_NEWS],
      [BTN_CALENDRIER, BTN_BRIEF],
      [BTN_STOCKS, BTN_STOCK],
-     [BTN_TRADE, BTN_TV],
+     [BTN_TV, BTN_META],
+     [BTN_TRADE],
      [BTN_WATCHLIST],
      [BTN_AIDE]],
     resize_keyboard=True,
@@ -129,6 +132,7 @@ BOT_COMMANDS = [
     BotCommand("myfxbook", "👥 Enregistrer ton compte Myfxbook"),
     BotCommand("analyse", "🧠 Analyse IA : ce qui se trame sur NQ et l'or"),
     BotCommand("zones", "🗺️ Graphique avec les zones ACHAT / VENTE (NQ + or)"),
+    BotCommand("meta", "🖥️ Indicateur MetaTrader 5 (zones à jour toutes seules)"),
     BotCommand("ecart", "📐 Mettre les zones au prix MetaTrader (ex. /ecart or 4012.5)"),
     BotCommand("marche", "📊 Type de marché (tendance, range…)"),
     BotCommand("signaux", "🎯 Signaux d'achat / vente"),
@@ -704,11 +708,31 @@ async def broadcast_zones(context: ContextTypes.DEFAULT_TYPE, why: str = "", urg
         return
     charts = await asyncio.to_thread(_zones_charts)
     head = f"🗺️ <b>Zones mises à jour</b> {fmt.e(why)}".strip()
+    tv = await asyncio.to_thread(_tv_line_if_changed)
     for chat_id in settings.allowed_chat_ids or state.chats:
         try:
             await _send_zones(context.bot, chat_id, charts, head)
+            if tv:
+                await send(context.bot, chat_id, "📺 <b>Le gamma a changé : nouvelle ligne TradingView</b> "
+                           "(roue dentée de l'indicateur → colle dans « Ligne copiée depuis /tv »)\n"
+                           f"<code>{fmt.e(tv)}</code>")
         except Exception:
             log.exception("Envoi des zones impossible vers %s", chat_id)
+
+
+def _price_items(line: str) -> set[str]:
+    return {item for part in line.split("||") for item in part.split("|", 1)[-1].split(";") if ":" in item}
+
+
+def _tv_line_if_changed() -> str | None:
+    """Nouvelle ligne TradingView seulement si les niveaux (gamma, IA…) ont changé depuis la dernière."""
+    line = _tv_line()
+    old = state.data.get("tv_line_sent", "")
+    if _price_items(line) == _price_items(old):
+        return None
+    state.data["tv_line_sent"] = line
+    state.save()
+    return line if old else None  # la toute première fois : on retient seulement
 
 
 async def job_zones(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -724,6 +748,34 @@ async def cmd_zones(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await reply(update, "💡 Les prix sont ceux des contrats à terme (NQ, GC). Pour avoir les zones au "
                             "prix de ton MetaTrader, tape le prix que tu vois là-bas, ex. :\n"
                             "<code>/ecart nq 25120</code> et <code>/ecart or 4012.5</code>")
+
+
+META_HELP = ("🖥️ <b>Indicateur MetaTrader 5 « SignalBot_Zones »</b>\n\n"
+             "Zones ACHAT / VENTE avec leur force ★ (gamma, hier, semaine, POC, IA), sentiment acheteur / "
+             "vendeur (Myfxbook, COT, tendance…) et prochaines news, <b>à jour toutes seules</b> chaque minute, "
+             "au prix de ton courtier. Le bot doit rester ouvert sur le même ordinateur.\n\n"
+             "<b>Installation (une seule fois)</b>\n"
+             "{auto}"
+             "1. Ouvre MetaTrader → Navigateur → Indicateurs (clic droit → Actualiser).\n"
+             "2. Glisse <b>SignalBot_Zones</b> sur ton graphique NAS100, puis sur XAUUSD.\n"
+             "3. Coche « Autoriser… » si demandé → OK.\n\n"
+             "Pas dans la liste ? Fichier → Ouvrir le dossier des données → MQL5 → Indicators → mets le "
+             "fichier ci-dessous dedans → MetaEditor → Compiler.")
+
+
+@restricted
+async def cmd_meta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    copies = await asyncio.to_thread(mt5.install_indicator) if mt5.files_dir(settings.mt5_files_dir) else []
+    found = mt5.files_dir(settings.mt5_files_dir) is not None
+    auto = ("✅ J'ai déjà copié l'indicateur dans ton MetaTrader : redémarre MetaTrader.\n" if copies else
+            "✅ L'indicateur est déjà dans ton MetaTrader.\n" if found else
+            "⚠️ Je ne trouve pas MetaTrader sur l'ordinateur du bot : mets le fichier ci-dessous à la main.\n")
+    if found:
+        await asyncio.to_thread(_write_mt5)
+    await reply(update, META_HELP.format(auto=auto))
+    await update.get_bot().send_document(
+        update.effective_chat.id, document=io.BytesIO(mt5.INDICATOR.read_bytes()),
+        filename=mt5.INDICATOR.name, caption="📄 Indicateur MetaTrader 5 (à mettre dans MQL5\\Indicators)")
 
 
 @restricted
@@ -953,7 +1005,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         BTN_MARCHE: cmd_marche, BTN_SIGNAUX: cmd_signaux, BTN_NEWS: cmd_news, BTN_RESUME: cmd_resume,
         BTN_NIVEAUX: cmd_niveaux, BTN_ANALYSE: cmd_analyse, BTN_TV: cmd_chart,
         BTN_CALENDRIER: cmd_calendrier, BTN_BRIEF: cmd_brief, BTN_STOCKS: cmd_stocks,
-        BTN_AIDE: cmd_help, BTN_ZONES: cmd_zones,
+        BTN_AIDE: cmd_help, BTN_ZONES: cmd_zones, BTN_META: cmd_meta,
     }
     if text in actions:
         context.user_data.pop("await", None)
@@ -1332,7 +1384,7 @@ def build_app() -> Application:
                      ("menu", cmd_menu),
                      ("marche", cmd_marche), ("signaux", cmd_signaux), ("pourquoi", cmd_pourquoi),
                      ("news", cmd_news), ("resume", cmd_resume), ("niveaux", cmd_niveaux),
-                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("zones", cmd_zones), ("ecart", cmd_ecart), ("trade", cmd_trade), ("cle", cmd_cle), ("myfxbook", cmd_myfxbook), ("etat", cmd_etat), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
+                     ("analyse", cmd_analyse), ("sg", cmd_sg), ("chart", cmd_chart), ("zones", cmd_zones), ("meta", cmd_meta), ("mt5", cmd_meta), ("ecart", cmd_ecart), ("trade", cmd_trade), ("cle", cmd_cle), ("myfxbook", cmd_myfxbook), ("etat", cmd_etat), ("tv", cmd_chart), ("calendrier", cmd_calendrier), ("stocks", cmd_stocks),
                      ("stock", cmd_stock), ("watchlist", cmd_watchlist), ("ajouter", cmd_ajouter),
                      ("retirer", cmd_retirer), ("brief", cmd_brief)]:
         app.add_handler(CommandHandler(name, fn))

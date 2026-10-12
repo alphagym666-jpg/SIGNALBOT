@@ -119,6 +119,8 @@ Quand le bot tourne sur le même ordinateur que MetaTrader 5 :
 - les prix sont convertis tout seuls au prix de ton courtier (NAS100, XAUUSD…) ;
 - alerte quand le prix entre dans une zone.
 
+**Le plus simple : tape `/meta`** (ou bouton 🖥️ MetaTrader) : le bot t'envoie l'indicateur et les étapes.
+
 Installation (une seule fois) : relance MetaTrader → Navigateur → Indicateurs → glisse **SignalBot_Zones** sur le
 graphique NAS100 et sur le graphique XAUUSD. S'il n'apparaît pas : clic droit sur « Indicateurs » → Actualiser
 (ou ouvre-le dans MetaEditor et clique sur Compiler).
@@ -135,6 +137,12 @@ Le fichier [`tradingview/SignalBot_Niveaux.pine`](tradingview/SignalBot_Niveaux.
 1. Ouvre le fichier `tradingview/SignalBot_Niveaux.pine` (Bloc-notes) et copie tout (Ctrl+A, Ctrl+C).
 2. Dans TradingView : en bas, onglet **Pine Editor** → supprime le contenu → colle → **Enregistrer** → **Ajouter au graphique**.
 3. Fais la même chose sur ton graphique de l'or (ou ajoute l'indicateur depuis « Mes scripts »).
+
+**Zones automatiques, toujours à jour sans rien coller :** départs de gros mouvements (offre / demande,
+la zone disparaît quand le prix la traverse), sommets / creux récents, chiffres ronds, haut / bas d'hier, de la
+nuit et de la semaine passée, VWAP, + sentiment « prix seul ». TradingView interdit aux indicateurs d'aller
+chercher des données sur Internet : le **gamma, Myfxbook, le COT et les zones IA** viennent de la ligne `/chart`.
+Le bot te renvoie une nouvelle ligne tout seul quand le gamma change ; une ligne de plus de 3 jours est ignorée.
 
 **Le plus simple : tape `/chart`** dans Telegram (ou bouton **📺 TradingView**). Le bot t'envoie le **code complet avec les niveaux du jour déjà dedans** (fichier à copier-coller dans le Pine Editor) et la ligne courte.
 

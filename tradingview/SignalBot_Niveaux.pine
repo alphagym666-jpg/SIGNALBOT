@@ -38,6 +38,14 @@ perSide = input.int(4, "Nombre de zones de chaque côté du prix", minval=1, max
 maxDist = input.float(4.0, "Distance max du prix (%)", minval=0.5, step=0.5, group=grpZ)
 zoneLeft = input.int(80, "Longueur des zones vers la gauche (bougies)", minval=5, group=grpZ)
 
+grpAuto = "Zones automatiques (sans le bot, toujours à jour)"
+autoImpulse = input.bool(true, "Départs de gros mouvements (offre / demande)", group=grpAuto)
+impulseMult = input.float(2.0, "Gros mouvement = bougie plus grande que X fois l'ATR", minval=1.0, step=0.25, group=grpAuto)
+autoPivots = input.bool(true, "Sommets / creux récents", group=grpAuto)
+pivotLen = input.int(10, "Force des sommets / creux (bougies de chaque côté)", minval=3, group=grpAuto)
+autoRound = input.bool(true, "Chiffres ronds (là où s'accumulent les options)", group=grpAuto)
+staleDays = input.int(3, "Ignorer la ligne du bot si elle a plus de X jours", minval=1, group=grpBot)
+
 grpLive = "Niveaux calculés en direct"
 showVwap = input.bool(true, "VWAP de la séance", group=grpLive)
 showPrev = input.bool(false, "Lignes haut / bas / clôture d'hier (déjà dans les zones)", group=grpLive)
@@ -92,7 +100,7 @@ shortName(string name) =>
 // murs gamma, bascule, SpotGamma et zones IA comptent double
 zoneWeight(string name) =>
     u = str.upper(name)
-    str.contains(u, "WALL") or str.contains(u, "BASCULE") or str.contains(u, "SPOTGAMMA") or str.contains(u, " SG") or str.contains(u, " IA") ? 2 : 1
+    str.contains(u, "WALL") or str.contains(u, "BASCULE") or str.contains(u, "SPOTGAMMA") or str.contains(u, " SG") or str.contains(u, " IA") or str.contains(u, "MOUVEMENT") ? 2 : 1
 
 drawZone(array<box> bxs, array<label> lbs, float lo, float hi, int f, string txt, bool buy, int left, int ext) =>
     col = buy ? color.green : color.red
@@ -180,6 +188,50 @@ plotshape(newShort, "Signal de vente", shape.triangledown, location.abovebar, co
 alertcondition(newLong, "SignalBot : signal d'achat", "SignalBot : repli acheteur sur {{ticker}} à {{close}}")
 alertcondition(newShort, "SignalBot : signal de vente", "SignalBot : repli vendeur sur {{ticker}} à {{close}}")
 
+// ------------------------------------------------------------------ zones automatiques
+// Départ d'un gros mouvement : la bougie juste avant une grosse bougie (> X ATR) est une zone
+// où les gros joueurs ont acheté (mouvement vers le haut) ou vendu (vers le bas).
+// La zone disparaît quand le prix clôture au travers.
+var array<float> impP = array.new<float>()
+var array<string> impN = array.new<string>()
+var array<float> impLo = array.new<float>()
+var array<float> impHi = array.new<float>()
+rngBar = high - low
+isImpulse = autoImpulse and not na(atr14) and rngBar > impulseMult * atr14 and math.abs(close - open) > 0.6 * rngBar
+if isImpulse and barstate.isconfirmed
+    array.push(impP, (high[1] + low[1]) / 2)
+    array.push(impN, close > open ? "Départ gros mouvement ↑" : "Départ gros mouvement ↓")
+    array.push(impLo, low[1])
+    array.push(impHi, high[1])
+    if array.size(impP) > 12
+        array.shift(impP)
+        array.shift(impN)
+        array.shift(impLo)
+        array.shift(impHi)
+if array.size(impP) > 0 and barstate.isconfirmed
+    for i = array.size(impP) - 1 to 0
+        up = str.contains(array.get(impN, i), "↑")
+        broken = up ? close < array.get(impLo, i) : close > array.get(impHi, i)
+        if broken and not (isImpulse and i == array.size(impP) - 1)
+            array.remove(impP, i)
+            array.remove(impN, i)
+            array.remove(impLo, i)
+            array.remove(impHi, i)
+
+var array<float> pivP = array.new<float>()
+var array<string> pivN = array.new<string>()
+phV = ta.pivothigh(high, pivotLen, pivotLen)
+plV = ta.pivotlow(low, pivotLen, pivotLen)
+if autoPivots and not na(phV)
+    array.push(pivP, phV)
+    array.push(pivN, "Sommet récent")
+if autoPivots and not na(plV)
+    array.push(pivP, plV)
+    array.push(pivN, "Creux récent")
+if array.size(pivP) > 8
+    array.shift(pivP)
+    array.shift(pivN)
+
 // ------------------------------------------------------------------ niveaux du bot (/tv)
 var array<line> drawnLines = array.new<line>()
 var array<label> drawnLabels = array.new<label>()
@@ -190,6 +242,7 @@ var string biasTxt = "n/d"
 var string gammaTxt = "n/d"
 var string dateTxt = ""
 var string sentTxt = "n/d"
+var bool botStale = false
 
 if barstate.islast
     for ln in drawnLines
@@ -207,6 +260,7 @@ if barstate.islast
     gammaTxt := "n/d"
     dateTxt := ""
     sentTxt := "n/d"
+    botStale := false
     sec = parseSection(str.replace_all(levelsTxt, "\n", ""), mkt)
     if str.length(sec) > 0
         for item in str.split(sec, ";")
@@ -218,11 +272,16 @@ if barstate.islast
                 sentTxt := str.substring(item, 5)
             else if str.startswith(item, "DATE=")
                 dateTxt := str.substring(item, 5)
+                dy = str.tonumber(str.substring(dateTxt, 0, 4))
+                dm = str.tonumber(str.substring(dateTxt, 5, 7))
+                dd = str.tonumber(str.substring(dateTxt, 8, 10))
+                if not na(dy) and not na(dm) and not na(dd)
+                    botStale := (timenow - timestamp("America/New_York", int(dy), int(dm), int(dd), 0, 0)) / 86400000 > staleDays
             else
                 kv = str.split(item, ":")
                 if array.size(kv) >= 2
                     p = str.tonumber(array.get(kv, 0))
-                    if not na(p)
+                    if not na(p) and not botStale
                         name = array.get(kv, 1)
                         price = p * ratio
                         col = levelColor(name)
@@ -258,6 +317,20 @@ if barstate.islast
             if timeframe.isintraday and not na(vwapV)
                 array.push(zP, vwapV)
                 array.push(zN, "VWAP")
+        if array.size(impP) > 0
+            for i = 0 to array.size(impP) - 1
+                array.push(zP, array.get(impP, i))
+                array.push(zN, array.get(impN, i))
+        if array.size(pivP) > 0
+            for i = 0 to array.size(pivP) - 1
+                array.push(zP, array.get(pivP, i))
+                array.push(zN, array.get(pivN, i))
+        if autoRound
+            stepR = mkt == "XAU" ? 50.0 : 250.0
+            baseR = math.floor(close / stepR) * stepR
+            for j = -1 to 2
+                array.push(zP, baseR + j * stepR)
+                array.push(zN, "Chiffre rond")
         tolPct = mergeIn > 0 ? mergeIn : mkt == "XAU" ? 0.25 : 0.18
         tol = close * tolPct / 100
         gLo = array.new<float>()
@@ -321,11 +394,18 @@ if barstate.isrealtime and barstate.isconfirmed and array.size(lvPrices) > 0
         if (close[1] < lv and close >= lv) or (close[1] > lv and close <= lv)
             alert("SignalBot : " + syminfo.ticker + " croise " + array.get(lvNames, i) + " (" + str.tostring(lv, format.mintick) + ")", alert.freq_once_per_bar_close)
 
+// ------------------------------------------------------------------ sentiment en direct (prix seulement)
+regimeVal(string r) =>
+    r == "Tendance haussière" or r == "Légèrement haussier" ? 1 : r == "Tendance baissière" or r == "Légèrement baissier" ? -1 : 0
+liveScore = math.round(100 * (regimeVal(rHtf) + regimeVal(rD1) + (close > vwapV ? 1 : -1) + (rsiV > 50 ? 1 : -1)) / 4)
+liveLabel = liveScore >= 40 ? "ACHETEUR" : liveScore >= 15 ? "Plutôt acheteur" : liveScore <= -40 ? "VENDEUR" : liveScore <= -15 ? "Plutôt vendeur" : "Partagé"
+liveSent = liveLabel + " " + str.tostring(math.round(50 + liveScore / 2)) + "% (prix seul)"
+
 // ------------------------------------------------------------------ tableau
 var table tb = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 25), border_width=1)
 if showTable and barstate.islast
     table.cell(tb, 0, 0, "SignalBot " + (mkt == "" ? "?" : mkt), text_color=color.white, text_size=size.small)
-    table.cell(tb, 1, 0, mkt == "" ? "marché non reconnu : choisis-le dans « Marché »" : dateTxt == "" ? "tape /chart dans Telegram" : "niveaux du " + dateTxt, text_color=mkt == "" ? color.orange : color.silver, text_size=size.small)
+    table.cell(tb, 1, 0, mkt == "" ? "marché non reconnu : choisis-le dans « Marché »" : dateTxt == "" ? "zones auto (tape /chart pour le gamma)" : botStale ? "ligne du " + dateTxt + " trop vieille → /chart" : "gamma du " + dateTxt, text_color=mkt == "" or botStale ? color.orange : color.silver, text_size=size.small)
     table.cell(tb, 0, 1, "Ce graphique", text_color=color.silver, text_size=size.small)
     table.cell(tb, 1, 1, rCur, text_color=regimeColor(rCur), text_size=size.small)
     table.cell(tb, 0, 2, "Tendance de fond", text_color=color.silver, text_size=size.small)
@@ -337,6 +417,7 @@ if showTable and barstate.islast
     table.cell(tb, 0, 5, "Gamma des options", text_color=color.silver, text_size=size.small)
     table.cell(tb, 1, 5, gammaTxt == "positif" ? "positif (marché amorti)" : gammaTxt == "négatif" ? "négatif (mouvements amplifiés)" : gammaTxt, text_color=gammaTxt == "positif" ? color.lime : gammaTxt == "négatif" ? color.red : color.silver, text_size=size.small)
     table.cell(tb, 0, 7, "Sentiment (Myfxbook, COT…)", text_color=color.silver, text_size=size.small)
-    table.cell(tb, 1, 7, sentTxt, text_color=str.contains(str.upper(sentTxt), "ACHETEUR") ? color.lime : str.contains(str.upper(sentTxt), "VENDEUR") ? color.red : color.silver, text_size=size.small)
+    sentShow = sentTxt == "n/d" or botStale ? liveSent : sentTxt
+    table.cell(tb, 1, 7, sentShow, text_color=str.contains(str.upper(sentShow), "ACHETEUR") ? color.lime : str.contains(str.upper(sentShow), "VENDEUR") ? color.red : color.silver, text_size=size.small)
     table.cell(tb, 0, 6, "Prix vs VWAP", text_color=color.silver, text_size=size.small)
     table.cell(tb, 1, 6, close > vwapV ? "au-dessus (acheteurs)" : "en dessous (vendeurs)", text_color=close > vwapV ? color.lime : color.red, text_size=size.small)

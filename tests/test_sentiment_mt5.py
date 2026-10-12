@@ -93,3 +93,43 @@ def test_bot_writes_mt5_file_and_resends_zones_after_big_move(monkeypatch, tmp_p
     asyncio.run(bot.job_moves(types.SimpleNamespace(bot=fb)))
     assert refreshed == ["NQ"] and "Gros mouvement" in texts[-1]
     assert len(photos) == 2 and "après le gros mouvement" in photos[0][1] and "Sentiment" in photos[0][1]
+
+
+def test_meta_button_sends_indicator(monkeypatch, tmp_path):
+    photos, texts, fb = _fake_market(monkeypatch, tmp_path)
+    docs = []
+
+    async def send_document(chat_id, document, filename=None, caption=None, **kw):
+        docs.append((filename, document.getvalue()))
+
+    fb.send_document = send_document
+
+    class Chat:
+        id = 1
+
+        async def send_message(self, text, **kw):
+            texts.append(text)
+
+    upd = types.SimpleNamespace(effective_chat=Chat(), get_bot=lambda: fb,
+                                message=types.SimpleNamespace(text=bot.BTN_META))
+    asyncio.run(bot.on_text(upd, types.SimpleNamespace(args=None, user_data={})))
+    assert docs[0][0] == "SignalBot_Zones.mq5" and docs[0][1].startswith(b"\xef\xbb\xbf")
+    assert any("SignalBot_Zones" in t and "Navigateur" in t for t in texts)
+
+
+def test_new_tradingview_line_sent_only_when_levels_change(monkeypatch, tmp_path):
+    _fake_market(monkeypatch, tmp_path)
+    lines = iter(["NQ|DATE=2026-10-12;SENT=Partagé 50%;25000:Call wall",
+                  "NQ|DATE=2026-10-12;SENT=ACHETEUR 80%;25000:Call wall",  # seul le sentiment change
+                  "NQ|DATE=2026-10-13;25250:Call wall"])
+    monkeypatch.setattr(bot, "_tv_line", lambda: next(lines))
+    assert bot._tv_line_if_changed() is None  # première fois : retenue seulement
+    assert bot._tv_line_if_changed() is None
+    assert bot._tv_line_if_changed() == "NQ|DATE=2026-10-13;25250:Call wall"
+
+
+def test_pine_has_self_updating_zones():
+    src = (Path(__file__).resolve().parent.parent / "tradingview" / "SignalBot_Niveaux.pine").read_text()
+    for word in ("Départ gros mouvement", "ta.pivothigh", "Chiffre rond", "botStale", "liveSent",
+                 "trop vieille"):
+        assert word in src
